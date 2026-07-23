@@ -2,6 +2,11 @@
 
 3-class image classifier distinguishing **real** photos, **human-edited** images (Photoshop/splicing/retouching), and **AI-generated deepfakes** (diffusion output), with per-class explainability signals rather than a single opaque logit.
 
+## Main architecture decisions
+
+- **EfficientNet-B4 over Xception.** Both are spatial-texture backbones — same evidence type, so running both would be two opinions on one signal rather than diverse evidence. EfficientNet's compound scaling gives a better accuracy/parameter tradeoff at this compute budget, and it's flagged as the cheapest strong option in `deepfake_detection_research.md`. Full comparison (incl. why not ResNet-50, CLIP-ViT, DINOv2) in `architecture_decisions.md` → Branch 1.
+- **Why a 3-stream pipeline, not 1, 2, or 4+.** 1 branch (RGB-only) is a single opaque logit — fails the explainability requirement and risks learning dataset fingerprints instead of manipulation cues. 2 branches (spatial + spectral) leaves `edited` with no branch built for its actual failure mode: a splice doesn't disturb global frequency statistics much, so it needs the noise-residual branch to catch it. 4+ branches has diminishing returns and makes the gate's output harder to read. 3 branches map cleanly onto 3 manipulation types — structural, generative-frequency, boundary-splice. See `architecture_decisions.md` → "Why 3 signal branches."
+
 See `deepfake_detection_research.md` for the SOTA survey and `architecture_decisions.md` for the finalized architecture with full reasoning.
 
 ## Architecture
@@ -26,7 +31,7 @@ Grad-CAM on the spatial branch adds a visual "where" heatmap alongside the gate'
 
 ## Dataset
 
-One dataset per class (see `architecture_decisions.md`'s Dataset section for why):
+One dataset per class (see `architecture_decisions.md` → Dataset for why):
 
 | Class | Source |
 |---|---|
@@ -47,34 +52,46 @@ CUDA is used automatically when available (`DEVICE` in `config.py`).
 
 ## Repo layout
 
-- `config.py` — shared paths/constants for data and model code
-- `data/download.py`, `data/face_filter.py` — dataset download + face-detect/crop pipeline
-- `model/branches.py`, `model/fusion.py`, `model/dataset.py`, `model/train.py`, `model/eval.py` — model, training, and eval code
-- `forgery_classifier.ipynb` — Colab notebook driving Data/Train/Eval end to end
-- `architecture_decisions.md`, `data_download.md`, `model_code.md` — design docs behind the code
-- `deepfake_detection_research.md` — background research
+| Path | Contents |
+|---|---|
+| `config.py` | Shared paths/constants for data and model code |
+| `data/download.py`, `data/face_filter.py` | Dataset download + face-detect/crop pipeline |
+| `model/branches.py`, `model/fusion.py`, `model/dataset.py`, `model/train.py`, `model/eval.py` | Model, training, and eval code |
+| `forgery_classifier.ipynb` | Colab notebook driving Data/Train/Eval end to end |
+| `architecture_decisions.md`, `data_download.md`, `model_code.md` | Design docs behind the code |
+| `deepfake_detection_research.md` | Background research |
 
 ## GPU
 
-<!-- TODO: placeholder — fill in with the GPU tier actually assigned for the training run and any tier-specific config used (see the GPU-tier table in architecture_decisions.md: T4/L4/A100 fallback configs). Reference build targeted an A100 40GB. -->
+1x NVIDIA A100 (40GB VRAM), Google Colab Pro.
 
 ## Time spent
 
-<!-- TODO: placeholder — log actual wall-clock time spent per phase (prep/data, model+training, eval) and compare against the budgets in data_download.md and model_code.md. -->
-
-## Gaussian usage
-
-<!-- TODO: placeholder — no Gaussian noise/blur augmentation currently implemented in the codebase. Document here if/when added (e.g. Gaussian noise augmentation for spectral-branch robustness, or Gaussian blur as a splice-boundary softening augmentation for the edited class). -->
+| Window | Activity |
+|---|---|
+| 2:00 – 2:30 PM | Setup, understanding the problem statement |
+| 2:30 – 3:00 PM | Domain research, SOTA approaches |
+| 3:00 – 4:00 PM | Architecture decisions |
+| 4:00 – 4:30 PM | Scaffolding code files |
+| 4:30 – 5:00 PM | Squashing dependency and code bugs |
+| 5:00 – 6:00 PM | Downloading + processing data — halted on the deepfake class: only 197 faces survived MTCNN filtering against a 300 floor (`data/face_filter.py`'s `DEEPFAKE_SURVIVAL_FLOOR` check). Training hasn't started as a result. |
 
 ## Future work (unconstrained)
 
-Ideas beyond the current 1.5hr/single-Colab-session scope (see "Open items carried forward" in `architecture_decisions.md`):
+Beyond the current single 4-hour session:
 
-- A 4th generalization branch (DINOv2 or CLIP-ViT), contingent on eval showing a cross-generator generalization gap the current 3 branches don't close
-- Training signal from more than one diffusion generator (currently DALL-E 3 only) — SynthBuster's other generator slices (Midjourney, SD) are held out as eval-only
-- Face-swap/reenactment deepfake representation (FF++/Celeb-DF), deliberately dropped for v1 since the eval target is full-image diffusion generation, not GAN face-swap
+**Data**
+- Fix the deepfake-class shortfall properly, not just retroactively — source a larger and/or face-specific diffusion dataset rather than a general-purpose slice that loses most of its hardest (most malformed, most informative) examples to MTCNN's landmark-detection filter.
+- Train on more than one diffusion generator. Currently DALL-E 3 only; hold out SynthBuster's other generator slices (Midjourney, Stable Diffusion) as eval-only to actually measure the cross-generator generalization gap before deciding whether it needs closing.
+- Add face-swap/reenactment coverage (FaceForensics++, Celeb-DF) if the real-world threat model includes GAN-based face swaps and not just full-image diffusion generation — deliberately dropped for v1 since the stated eval target is diffusion output.
 
-<!-- TODO: placeholder — expand with any other decisions that were made under the time/compute constraint and would be revisited given unlimited time/compute. -->
+**Model**
+- Add DINOv2 or CLIP-ViT as a 4th "generalization" branch — contingent on eval actually showing a cross-generator gap the current 3 branches don't close, not worth the added compute/complexity speculatively.
+- Revisit EfficientNet-B4 vs. a ViT-based spatial backbone once there's more than a single hackathon session to fine-tune one properly.
+
+**Pipeline breadth**
+- Metadata forensics as a cheap first-pass filter — EXIF, dimensions, compression, timestamps — ahead of the pixel branch. Spoofable and increasingly unavailable on stripped upload pipelines, but free, so worth keeping as a first signal rather than the primary one.
+- Post-training design: what breaks once this ships against real KYC traffic — adversarial recompression/cropping to evade the noise-residual branch, new generators the spectral branch hasn't seen, drift in what "edited" looks like — and how a post-training loop would close each gap.
 
 ## To-dos
 
@@ -85,11 +102,12 @@ Ideas beyond the current 1.5hr/single-Colab-session scope (see "Open items carri
 - [x] decide metrics and why (macro-F1, per-class precision/recall, ROC-AUC — see `model_code.md`)
 - [x] decide loss function (class-weighted cross-entropy)
 - [x] find data
-- [x] set up model, data, metrics and start training
-- [ ] incorporate future decisions made without constraints into this README (see "Future work" above)
-- [ ] write up Gaussian usage in this README (see "Gaussian usage" above)
-- [ ] include GPU info in this README (see "GPU" above)
-- [ ] log time spent in this README (see "Time spent" above)
+- [x] set up model, data, metrics pipeline
+- [ ] start training — blocked: deepfake class under the 300-face floor after filtering (197 survived, see Time spent / Future work)
+- [ ] fold prioritized Future work items back into this README as they're picked up
+- [ ] document Gaussian noise/blur augmentation status — none implemented yet; note here if/when added (e.g. noise augmentation for spectral-branch robustness, or blur to soften splice boundaries for the edited class)
+- [x] include GPU info in this README (see "GPU" above)
+- [x] log time spent in this README (see "Time spent" above)
 
 ## Notes
 
