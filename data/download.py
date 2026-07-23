@@ -14,7 +14,7 @@ Auth:
   anonymous pull (COCO_AI is a public dataset).
 """
 import argparse
-import itertools
+import re
 import sys
 from pathlib import Path
 
@@ -23,6 +23,21 @@ from tqdm.auto import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import DEEPFAKE_SRC, EDITED_SRC, HF_DATASET, KAGGLE_DATASET, REAL_SRC, SEED
 
+# COCO_AI pairs are sampled from all of COCO, most of which has no person/face
+# in frame at all -- that (not the detector) is why face-filtering's survival
+# rate was ~15-20% across every class. Pre-filter on the caption's wording so
+# the pool MTCNN runs on is mostly person-containing to begin with.
+PERSON_KEYWORDS = {
+    "man", "men", "woman", "women", "person", "people", "boy", "boys", "girl", "girls",
+    "child", "children", "kid", "kids", "baby", "babies", "guy", "guys", "lady", "ladies",
+    "face", "faces", "toddler", "toddlers", "adult", "adults", "player", "players",
+}
+
+
+def caption_has_person(caption: str) -> bool:
+    words = re.findall(r"[a-z']+", caption.lower())
+    return any(w in PERSON_KEYWORDS for w in words)
+
 
 def download_coco_ai(n_pairs: int, seed: int = SEED) -> None:
     from datasets import load_dataset
@@ -30,30 +45,41 @@ def download_coco_ai(n_pairs: int, seed: int = SEED) -> None:
     REAL_SRC.mkdir(parents=True, exist_ok=True)
     DEEPFAKE_SRC.mkdir(parents=True, exist_ok=True)
 
-    buffer_size = min(n_pairs * 2, 2000)
-    print(f"Streaming {HF_DATASET} (train split), sampling {n_pairs} pairs (shuffle buffer={buffer_size})...")
+    print(f"Streaming {HF_DATASET} (train split), collecting {n_pairs} person-caption pairs...")
     ds = load_dataset(HF_DATASET, split="train", streaming=True)
-    ds = ds.select_columns(["coco_image", "dalle_image"])
-    ds = ds.shuffle(seed=seed, buffer_size=buffer_size)
+    ds = ds.select_columns(["caption", "coco_image", "dalle_image"])
+    ds = ds.shuffle(seed=seed, buffer_size=10_000)  # whole dataset is ~10k rows
 
-    print("Filling shuffle buffer (downloads underlying shards -- no per-row progress until this completes)...")
-    written = 0
-    with tqdm(total=n_pairs, desc="COCO_AI pairs", unit="pair") as pbar:
-        for i, row in enumerate(itertools.islice(ds, n_pairs)):
+    written = seen = 0
+    with tqdm(total=n_pairs, desc="COCO_AI person pairs", unit="pair") as pbar:
+        for row in ds:
+            seen += 1
+            if not caption_has_person(row.get("caption") or ""):
+                continue
             real_img, fake_img = row["coco_image"], row["dalle_image"]
             if real_img is None or fake_img is None:
                 continue
-            name = f"{i:05d}.jpg"
+            name = f"{written:05d}.jpg"
             real_img.convert("RGB").save(REAL_SRC / name, quality=95)
             fake_img.convert("RGB").save(DEEPFAKE_SRC / name, quality=95)
             written += 1
             pbar.update(1)
+            if written >= n_pairs:
+                break
 
-    print(f"COCO_AI: wrote {written} real/deepfake pairs to {REAL_SRC} and {DEEPFAKE_SRC}")
+    print(
+        f"COCO_AI: scanned {seen} rows, wrote {written} person-caption real/deepfake "
+        f"pairs to {REAL_SRC} and {DEEPFAKE_SRC}"
+    )
     if written == 0:
         raise RuntimeError(
-            "No COCO_AI pairs written -- the dataset schema (coco_image/dalle_image "
+            "No COCO_AI pairs written -- the dataset schema (coco_image/dalle_image/caption "
             "columns) may have changed upstream; check https://huggingface.co/datasets/NasrinImp/COCO_AI"
+        )
+    if written < n_pairs:
+        print(
+            f"WARNING: only {written}/{n_pairs} requested pairs found (dataset exhausted). "
+            "Proceeding with what was collected -- check the deepfake survival floor in face_filter.py."
         )
 
 
@@ -81,7 +107,9 @@ def download_casia(force: bool = False) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--n-pairs", type=int, default=3000, help="real/deepfake pairs to pull from COCO_AI")
+    parser.add_argument(
+        "--n-pairs", type=int, default=3000, help="person-caption real/deepfake pairs to collect from COCO_AI"
+    )
     parser.add_argument("--skip-coco-ai", action="store_true")
     parser.add_argument("--skip-casia", action="store_true")
     parser.add_argument("--force-casia", action="store_true", help="re-download CASIA even if edited_src is non-empty")

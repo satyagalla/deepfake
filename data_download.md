@@ -15,6 +15,8 @@ Fetch three sources into separate raw folders (`deepfake_src`, `real_src`, `edit
 - **Real:** the pristine images paired 1:1 with that same DALL-E 3 slice (not an unrelated curated set — see `architecture_decisions.md`'s Dataset section for why).
 - **Edited:** CASIA v2.0's *tampered* images only. CASIA also ships its own authentic set — ignore it; the real class is single-sourced from `real_src` to avoid mixing two different real-image pools.
 
+**COCO_AI pairs are sampled from all of COCO, not just person-containing images** — most of COCO has no face in frame at all, which is the actual cause of face-filtering's low survival rate (not the detector). `data/download.py` filters on the row's `caption` field for person-indicating words before saving a pair, and keeps collecting from the (shuffled) stream until `--n-pairs` *matching* pairs are found, not just the first N raw rows.
+
 **Do not guess or hardcode a download URL/Kaggle slug for the COCO_AI/SynthBuster source or CASIA v2.0** — confirm the exact identifier first (Kaggle dataset slug, GitHub release, or direct link), since a wrong guess here silently pulls the wrong data. If using Kaggle, the standard pattern is: upload `kaggle.json`, point `KAGGLE_CONFIG_DIR` at it, then use the Kaggle CLI/API to download and unzip into the raw folder — same pattern for both Kaggle sources if both end up hosted there.
 
 ## 2. Face detect + crop — uniform across all three classes
