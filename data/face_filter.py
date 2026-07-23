@@ -12,6 +12,7 @@ from pathlib import Path
 
 from facenet_pytorch import MTCNN
 from PIL import Image
+from tqdm.auto import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import (
@@ -63,6 +64,7 @@ def batched(seq: list, n: int):
 def detect_and_crop(mtcnn: MTCNN, paths: list[Path], class_name: str) -> list[tuple[Path, Image.Image]]:
     results = []
     seen = detected = 0
+    pbar = tqdm(total=len(paths), desc=f"[{class_name}] detect+crop", unit="img")
     for batch_paths in batched(paths, BATCH_SIZE):
         imgs, valid_paths = [], []
         for p in batch_paths:
@@ -72,6 +74,7 @@ def detect_and_crop(mtcnn: MTCNN, paths: list[Path], class_name: str) -> list[tu
             except Exception as e:
                 print(f"  [{class_name}] skip unreadable file {p}: {e}")
         if not imgs:
+            pbar.update(len(batch_paths))
             continue
         seen += len(imgs)
         faces = mtcnn(imgs)  # list aligned with imgs; entries are Tensor[3,H,W] (0-255) or None
@@ -81,6 +84,9 @@ def detect_and_crop(mtcnn: MTCNN, paths: list[Path], class_name: str) -> list[tu
             arr = face.clamp(0, 255).byte().permute(1, 2, 0).numpy()
             results.append((p, Image.fromarray(arr)))
             detected += 1
+        pbar.update(len(batch_paths))
+        pbar.set_postfix(detected=detected, rejected=seen - detected)
+    pbar.close()
     rejected = seen - detected
     pct = 100 * rejected / max(seen, 1)
     print(f"[{class_name}] seen: {seen}, faces detected: {detected}, rejected: {rejected} ({pct:.1f}%)")
@@ -154,7 +160,9 @@ def main() -> None:
             train_items, val_items = stratified_split(items, seed=SEED, val_fraction=args.val_fraction)
 
             for split_name, split_items in (("train", train_items), ("val", val_items)):
-                for i, (src_path, img) in enumerate(split_items):
+                for i, (src_path, img) in enumerate(
+                    tqdm(split_items, desc=f"[{cls}] saving {split_name}", unit="img", leave=False)
+                ):
                     out_name = f"{cls}_{src_path.stem}_{i:05d}.jpg"
                     out_path = DATASET_DIR / split_name / cls / out_name
                     img.save(out_path, quality=95)

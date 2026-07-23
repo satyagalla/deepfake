@@ -18,6 +18,8 @@ import itertools
 import sys
 from pathlib import Path
 
+from tqdm.auto import tqdm
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import DEEPFAKE_SRC, EDITED_SRC, HF_DATASET, KAGGLE_DATASET, REAL_SRC, SEED
 
@@ -28,22 +30,24 @@ def download_coco_ai(n_pairs: int, seed: int = SEED) -> None:
     REAL_SRC.mkdir(parents=True, exist_ok=True)
     DEEPFAKE_SRC.mkdir(parents=True, exist_ok=True)
 
-    print(f"Streaming {HF_DATASET} (train split), sampling {n_pairs} pairs...")
+    buffer_size = min(n_pairs * 2, 2000)
+    print(f"Streaming {HF_DATASET} (train split), sampling {n_pairs} pairs (shuffle buffer={buffer_size})...")
     ds = load_dataset(HF_DATASET, split="train", streaming=True)
     ds = ds.select_columns(["coco_image", "dalle_image"])
-    ds = ds.shuffle(seed=seed, buffer_size=max(n_pairs * 2, 1000))
+    ds = ds.shuffle(seed=seed, buffer_size=buffer_size)
 
+    print("Filling shuffle buffer (downloads underlying shards -- no per-row progress until this completes)...")
     written = 0
-    for i, row in enumerate(itertools.islice(ds, n_pairs)):
-        real_img, fake_img = row["coco_image"], row["dalle_image"]
-        if real_img is None or fake_img is None:
-            continue
-        name = f"{i:05d}.jpg"
-        real_img.convert("RGB").save(REAL_SRC / name, quality=95)
-        fake_img.convert("RGB").save(DEEPFAKE_SRC / name, quality=95)
-        written += 1
-        if written % 200 == 0:
-            print(f"  {written}/{n_pairs} pairs written")
+    with tqdm(total=n_pairs, desc="COCO_AI pairs", unit="pair") as pbar:
+        for i, row in enumerate(itertools.islice(ds, n_pairs)):
+            real_img, fake_img = row["coco_image"], row["dalle_image"]
+            if real_img is None or fake_img is None:
+                continue
+            name = f"{i:05d}.jpg"
+            real_img.convert("RGB").save(REAL_SRC / name, quality=95)
+            fake_img.convert("RGB").save(DEEPFAKE_SRC / name, quality=95)
+            written += 1
+            pbar.update(1)
 
     print(f"COCO_AI: wrote {written} real/deepfake pairs to {REAL_SRC} and {DEEPFAKE_SRC}")
     if written == 0:
