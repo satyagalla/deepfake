@@ -161,7 +161,10 @@ def main() -> None:
         writer = csv.writer(f)
         writer.writerow(["path", "class", "split", "source_dataset"])
 
-        for cls in CLASSES:
+        # deepfake first: it's the class most likely to trip the survival
+        # floor below, so a doomed run fails in minutes instead of after
+        # also paying for CASIA's much larger edited-class pass.
+        for cls in sorted(CLASSES, key=lambda c: 0 if c == "deepfake" else 1):
             src_paths = list_source_images(cls)
             if not src_paths:
                 print(f"WARNING: no source images found for class '{cls}' -- did data/download.py run?")
