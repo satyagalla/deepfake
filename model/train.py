@@ -114,13 +114,15 @@ def train(
         for i, cls in enumerate(CLASSES):
             print(f"  {cls:>9s}: precision={precision[i]:.3f} recall={recall[i]:.3f}")
 
+        epoch_ckpt = {"model_state_dict": model.state_dict(), "epoch": epoch, "macro_f1": macro_f1}
+        epoch_path = CHECKPOINT_DIR / f"epoch_{epoch:02d}.pt"
+        torch.save(epoch_ckpt, epoch_path)
+        print(f"  -> saved {epoch_path}")
+
         if macro_f1 > best_macro_f1:
             best_macro_f1 = macro_f1
             epochs_no_improve = 0
-            torch.save(
-                {"model_state_dict": model.state_dict(), "epoch": epoch, "macro_f1": macro_f1},
-                best_path,
-            )
+            torch.save(epoch_ckpt, best_path)
             print(f"  -> new best macro-F1 {macro_f1:.4f}, saved to {best_path}")
         else:
             epochs_no_improve += 1
