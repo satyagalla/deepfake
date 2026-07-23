@@ -85,7 +85,7 @@ Ideas beyond the current 1.5hr/single-Colab-session scope (see "Open items carri
 - [x] decide metrics and why (macro-F1, per-class precision/recall, ROC-AUC — see `model_code.md`)
 - [x] decide loss function (class-weighted cross-entropy)
 - [x] find data
-- [ ] set up model, data, metrics and start training
+- [x] set up model, data, metrics and start training
 - [ ] incorporate future decisions made without constraints into this README (see "Future work" above)
 - [ ] write up Gaussian usage in this README (see "Gaussian usage" above)
 - [ ] include GPU info in this README (see "GPU" above)
