@@ -1,0 +1,24 @@
+notes.md
+
+# venv
+.venv/
+
+# python
+__pycache__/
+*.pyc
+
+# data / model artifacts
+data_raw/
+dataset/
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+
+# credentials
+kaggle.json
+.env
+
+# os
+.DS_Store
+Thumbs.db
