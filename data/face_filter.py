@@ -77,7 +77,19 @@ def detect_and_crop(mtcnn: MTCNN, paths: list[Path], class_name: str) -> list[tu
             pbar.update(len(batch_paths))
             continue
         seen += len(imgs)
-        faces = mtcnn(imgs)  # list aligned with imgs; entries are Tensor[3,H,W] (0-255) or None
+        # mtcnn(list) requires every image in the call to share identical
+        # pixel dimensions -- group by actual size so same-size images still
+        # go through as one batched GPU call (no resize/distortion of source
+        # pixels, which would blur the SRM/FFT branches' signal).
+        faces: list = [None] * len(imgs)
+        by_size: dict[tuple[int, int], list[int]] = {}
+        for idx, im in enumerate(imgs):
+            by_size.setdefault(im.size, []).append(idx)
+        for idxs in by_size.values():
+            group = [imgs[i] for i in idxs]
+            group_faces = mtcnn(group) if len(group) > 1 else [mtcnn(group[0])]
+            for i, f in zip(idxs, group_faces):
+                faces[i] = f
         for p, face in zip(valid_paths, faces):
             if face is None:
                 continue
