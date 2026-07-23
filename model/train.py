@@ -75,7 +75,7 @@ def train(
 
     total_steps = epochs * len(train_loader)
     scheduler = make_warmup_cosine_scheduler(optimizer, total_steps)
-    scaler = torch.amp.GradScaler(device="cuda", enabled=(device == "cuda"))
+    scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
 
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     best_macro_f1 = -1.0
