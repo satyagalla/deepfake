@@ -154,7 +154,3 @@ One dataset per class, chosen for a tight prep window and for matching the actua
 - Face detectors can reject the most artifact-heavy generated faces (malformed features break landmark detection), which risk-filters out exactly the hardest, most informative examples. Check the DALL-E 3 slice's post-filter survival rate before committing to this pipeline — if too few images survive, a bigger or face-specific diffusion source is needed instead.
 
 See `data_download.md` for the concrete download/preprocessing steps and `model_code.md` for the training implementation plan.
-
-## Open items carried forward
-
-- DINOv2 (or CLIP-ViT) as a 4th generalization branch: reserved for v2, contingent on real eval results showing a generalization gap the current 3 branches don't close.
