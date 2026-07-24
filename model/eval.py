@@ -35,18 +35,26 @@ def load_model(checkpoint_path: str, device: str = DEVICE) -> ForgeryClassifier:
 
 @torch.no_grad()
 def compute_metrics(model: ForgeryClassifier, loader, device: str = DEVICE) -> dict:
-    all_logits, all_labels = [], []
+    all_logits, all_labels, all_gates = [], [], []
     for batch in loader:
         rgb = batch["rgb"].to(device)
         fft_mag = batch["fft_mag"].to(device)
         srm = batch["srm_residual"].to(device)
-        logits, _ = model(rgb, fft_mag, srm)
+        logits, gate_weights = model(rgb, fft_mag, srm)
         all_logits.append(logits.cpu())
         all_labels.append(batch["label"])
+        all_gates.append(gate_weights.cpu())
     logits = torch.cat(all_logits)
     labels = torch.cat(all_labels).numpy()
+    gates = torch.cat(all_gates).numpy()  # (N, 3) -- spatial/spectral/noise_residual contribution
     probs = torch.softmax(logits, dim=1).numpy()
     preds = probs.argmax(axis=1)
+
+    mean_gate = dict(zip(BRANCH_NAMES, gates.mean(axis=0).tolist()))
+    mean_gate_per_class = {
+        cls: dict(zip(BRANCH_NAMES, gates[labels == i].mean(axis=0).tolist())) if (labels == i).any() else None
+        for i, cls in enumerate(CLASSES)
+    }
 
     macro_f1 = f1_score(labels, preds, average="macro", zero_division=0)
     precision, recall, _, _ = precision_recall_fscore_support(
@@ -67,6 +75,8 @@ def compute_metrics(model: ForgeryClassifier, loader, device: str = DEVICE) -> d
         "recall": dict(zip(CLASSES, recall)),
         "roc_auc_ovr": roc_auc,
         "confusion_matrix": cm,
+        "mean_gate_weights": mean_gate,
+        "mean_gate_weights_per_class": mean_gate_per_class,
     }
 
 
@@ -88,6 +98,15 @@ def print_report(metrics: dict) -> None:
         "(the novel failure mode this 3-class setup introduces -- watch this cell, not just accuracy)"
     )
 
+    print("\nMean gate contribution weights (per-branch share of the fused prediction):")
+    print("  overall  : " + ", ".join(f"{b}={w:.3f}" for b, w in metrics["mean_gate_weights"].items()))
+    for cls in CLASSES:
+        per_class = metrics["mean_gate_weights_per_class"][cls]
+        if per_class is None:
+            print(f"  {cls:>8s} : (no val samples)")
+        else:
+            print(f"  {cls:>8s} : " + ", ".join(f"{b}={w:.3f}" for b, w in per_class.items()))
+
 
 def save_metrics(metrics: dict, out_dir: Path = EVAL_DIR, tag: str = "val") -> Path:
     """Write metrics to <out_dir>/metrics_<tag>_<timestamp>.json (confusion
@@ -101,6 +120,8 @@ def save_metrics(metrics: dict, out_dir: Path = EVAL_DIR, tag: str = "val") -> P
         "roc_auc_ovr": metrics["roc_auc_ovr"],
         "confusion_matrix": metrics["confusion_matrix"].tolist(),
         "classes": CLASSES,
+        "mean_gate_weights": metrics["mean_gate_weights"],
+        "mean_gate_weights_per_class": metrics["mean_gate_weights_per_class"],
     }
     out_path = out_dir / f"metrics_{tag}_{stamp}.json"
     out_path.write_text(json.dumps(payload, indent=2))
