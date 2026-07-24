@@ -7,6 +7,7 @@ import argparse
 import csv
 import random
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -64,15 +65,19 @@ def batched(seq: list, n: int):
 def detect_and_crop(mtcnn: MTCNN, paths: list[Path], class_name: str) -> list[tuple[Path, Image.Image]]:
     results = []
     seen = detected = 0
+    t_decode = t_infer = t_pack = 0.0
+    group_size_counts: Counter = Counter()
     pbar = tqdm(total=len(paths), desc=f"[{class_name}] detect+crop", unit="img")
     for batch_paths in batched(paths, BATCH_SIZE):
         imgs, valid_paths = [], []
+        t0 = time.perf_counter()
         for p in batch_paths:
             try:
                 imgs.append(Image.open(p).convert("RGB"))
                 valid_paths.append(p)
             except Exception as e:
                 print(f"  [{class_name}] skip unreadable file {p}: {e}")
+        t_decode += time.perf_counter() - t0
         if not imgs:
             pbar.update(len(batch_paths))
             continue
@@ -89,7 +94,9 @@ def detect_and_crop(mtcnn: MTCNN, paths: list[Path], class_name: str) -> list[tu
         for idx, im in enumerate(imgs):
             by_size.setdefault(im.size, []).append(idx)
         for idxs in by_size.values():
+            group_size_counts[len(idxs)] += 1
             group = [imgs[i] for i in idxs]
+            t1 = time.perf_counter()
             if len(group) == 1:
                 group_faces = [mtcnn(group[0])]
             else:
@@ -97,20 +104,36 @@ def detect_and_crop(mtcnn: MTCNN, paths: list[Path], class_name: str) -> list[tu
                     group_faces = mtcnn(group)
                 except ValueError:
                     group_faces = [mtcnn(im) for im in group]
+            t_infer += time.perf_counter() - t1
             for i, f in zip(idxs, group_faces):
                 faces[i] = f
+        t2 = time.perf_counter()
         for p, face in zip(valid_paths, faces):
             if face is None:
                 continue
             arr = face.clamp(0, 255).byte().permute(1, 2, 0).numpy()
             results.append((p, Image.fromarray(arr)))
             detected += 1
+        t_pack += time.perf_counter() - t2
         pbar.update(len(batch_paths))
         pbar.set_postfix(detected=detected, rejected=seen - detected)
     pbar.close()
     rejected = seen - detected
     pct = 100 * rejected / max(seen, 1)
     print(f"[{class_name}] seen: {seen}, faces detected: {detected}, rejected: {rejected} ({pct:.1f}%)")
+
+    total_groups = sum(group_size_counts.values())
+    singleton_groups = group_size_counts.get(1, 0)
+    singleton_pct = 100 * singleton_groups / max(total_groups, 1)
+    print(
+        f"[{class_name}] timing -- decode: {t_decode:.1f}s, mtcnn: {t_infer:.1f}s, "
+        f"pack: {t_pack:.1f}s (save time reported separately in main)"
+    )
+    print(
+        f"[{class_name}] GPU-batch fragmentation -- {singleton_groups}/{total_groups} "
+        f"size-groups ({singleton_pct:.1f}%) ran as singletons (no batching); "
+        f"group-size histogram: {dict(sorted(group_size_counts.items()))}"
+    )
     return results
 
 
@@ -138,9 +161,25 @@ def stratified_split(items: list[tuple[str, tuple]], seed: int, val_fraction: fl
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--val-fraction", type=float, default=VAL_FRACTION)
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help=(
+            "Diagnostic mode: cap source images per class to this many, skip the "
+            "deepfake survival-floor check, and write output to a sibling "
+            "'dataset_diag' dir instead of the real dataset dir -- for quickly "
+            "timing the decode/mtcnn/save phases on a small slice."
+        ),
+    )
     args = parser.parse_args()
+    diag = args.limit is not None
+    out_dir = (DATASET_DIR.parent / "dataset_diag") if diag else DATASET_DIR
+    manifest_path = (out_dir / "manifest.csv") if diag else MANIFEST_PATH
 
     print(f"Using device: {DEVICE}")
+    if diag:
+        print(f"[diag mode] limit={args.limit} images/class, writing to {out_dir}")
     mtcnn = MTCNN(
         image_size=IMAGE_SIZE,
         margin=FACE_MARGIN,
@@ -152,12 +191,13 @@ def main() -> None:
 
     for split in ("train", "val"):
         for cls in CLASSES:
-            (DATASET_DIR / split / cls).mkdir(parents=True, exist_ok=True)
-    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+            (out_dir / split / cls).mkdir(parents=True, exist_ok=True)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
     balance_counts: Counter = Counter()
+    t_save_total = 0.0
 
-    with open(MANIFEST_PATH, "w", newline="") as f:
+    with open(manifest_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["path", "class", "split", "source_dataset"])
 
@@ -169,10 +209,12 @@ def main() -> None:
             if not src_paths:
                 print(f"WARNING: no source images found for class '{cls}' -- did data/download.py run?")
                 continue
+            if diag:
+                src_paths = src_paths[: args.limit]
 
             cropped = detect_and_crop(mtcnn, src_paths, cls)
 
-            if cls == "deepfake" and len(cropped) < DEEPFAKE_SURVIVAL_FLOOR:
+            if cls == "deepfake" and not diag and len(cropped) < DEEPFAKE_SURVIVAL_FLOOR:
                 raise SystemExit(
                     f"STOP: only {len(cropped)} deepfake faces survived filtering "
                     f"(floor: {DEEPFAKE_SURVIVAL_FLOOR}). Too few to train on -- revisit "
@@ -183,24 +225,29 @@ def main() -> None:
             items = [(pair_key(cls, p), (p, img)) for p, img in cropped]
             train_items, val_items = stratified_split(items, seed=SEED, val_fraction=args.val_fraction)
 
+            t_save_cls = 0.0
             for split_name, split_items in (("train", train_items), ("val", val_items)):
                 for i, (src_path, img) in enumerate(
                     tqdm(split_items, desc=f"[{cls}] saving {split_name}", unit="img", leave=False)
                 ):
                     out_name = f"{cls}_{src_path.stem}_{i:05d}.jpg"
-                    out_path = DATASET_DIR / split_name / cls / out_name
+                    out_path = out_dir / split_name / cls / out_name
+                    t0 = time.perf_counter()
                     img.save(out_path, quality=95)
-                    rel_path = out_path.relative_to(DATASET_DIR).as_posix()
+                    t_save_cls += time.perf_counter() - t0
+                    rel_path = out_path.relative_to(out_dir).as_posix()
                     writer.writerow([rel_path, cls, split_name, SOURCE_NAME[cls]])
                     balance_counts[(cls, split_name)] += 1
             f.flush()
-            print(f"[{cls}] train: {len(train_items)}, val: {len(val_items)}")
+            t_save_total += t_save_cls
+            print(f"[{cls}] train: {len(train_items)}, val: {len(val_items)}, save time: {t_save_cls:.1f}s")
 
     print("\n=== Class balance check ===")
     for cls in CLASSES:
         for split_name in ("train", "val"):
             print(f"  {cls:>9s} / {split_name:>5s}: {balance_counts.get((cls, split_name), 0)}")
-    print(f"\nManifest written to {MANIFEST_PATH}")
+    print(f"\nTotal save (JPEG encode + write) time: {t_save_total:.1f}s")
+    print(f"Manifest written to {manifest_path}")
 
 
 if __name__ == "__main__":
