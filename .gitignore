@@ -23,3 +23,5 @@ kaggle.json
 # os
 .DS_Store
 Thumbs.db
+
+forgery_classifier_final.ipynb
