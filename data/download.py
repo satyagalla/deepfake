@@ -142,14 +142,17 @@ def download_all(
     n_pairs: int = 3000,
     skip_coco_ai: bool = False,
     skip_casia: bool = False,
-    skip_ps_battles: bool = False,
+    skip_ps_battles: bool = True,
     force_casia: bool = False,
     force_ps_battles: bool = False,
 ) -> None:
     """Runs the requested downloads concurrently -- independent I/O-bound
     network pulls (HF streaming, 2x Kaggle), so total wall-clock is roughly
     the slowest of the three instead of the sum. tqdm bars from each source
-    interleave in the log (cosmetic only); each writes to its own directory."""
+    interleave in the log (cosmetic only); each writes to its own directory.
+
+    skip_ps_battles defaults to True -- see test_sources()'s docstring for
+    why (its Kaggle slug ships a downloader script, not actual images)."""
     tasks = {}
     if not skip_coco_ai:
         tasks["COCO_AI"] = lambda: download_coco_ai(n_pairs)
@@ -191,10 +194,22 @@ def _test_coco_ai(n_sample: int = 200) -> None:
         )
 
 
+_IMG_EXTS_FOR_TEST = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+
+
 def _test_kaggle_source(dataset_slug: str, label: str, classify, require_label: str | None = None) -> None:
     """Kaggle auth + file listing only, no download -- a broken token, wrong
-    slug, or (for PS-Battles) an unmatched folder-layout heuristic fails
-    here in seconds instead of after paying for the full transfer."""
+    slug, a dataset that ships scripts/metadata instead of actual images
+    (checked explicitly, since a keyword heuristic can false-positive-match
+    a non-image filename like "photoshops.tsv"), or an unmatched
+    folder-layout heuristic all fail here in seconds instead of after
+    paying for the full transfer.
+
+    dataset_list_files() is paginated -- this account/client version returns
+    ~20 files per call, so for a dataset with more files than that, this is
+    an arbitrary (alphabetically-first) slice, not the full listing. Treat
+    a full page as untrustworthy for a hard require_label gate; only trust
+    it when it's short enough to plausibly be the complete listing."""
     from kaggle.api.kaggle_api_extended import KaggleApi
 
     api = KaggleApi()
@@ -202,23 +217,48 @@ def _test_kaggle_source(dataset_slug: str, label: str, classify, require_label: 
     names = [f.name for f in api.dataset_list_files(dataset_slug).files]
     if not names:
         raise RuntimeError(f"[{label}] Kaggle listed 0 files for {dataset_slug} -- check the dataset slug.")
-    counts = Counter(classify(Path(n)) for n in names)
     print(f"[{label}] Kaggle auth OK, {len(names)} files listed for {dataset_slug} (sample: {names[:5]})")
-    print(f"[{label}] path-heuristic counts across the full listing: {dict(counts)}")
+
+    image_names = [n for n in names if Path(n).suffix.lower() in _IMG_EXTS_FOR_TEST]
+    if not image_names:
+        raise RuntimeError(
+            f"[{label}] 0 image files among {len(names)} listed for {dataset_slug} (listing: {names[:10]}) "
+            "-- this dataset likely ships metadata/scripts rather than pre-downloaded images (e.g. a "
+            "downloader script that fetches from live URLs), which would reintroduce link-rot risk "
+            "instead of the ready-image-files property this source was picked for."
+        )
+
+    truncated = len(names) >= 20  # this client's apparent page size -- see docstring
+    counts = Counter(classify(Path(n)) for n in image_names)
+    print(f"[{label}] path-heuristic counts across {len(image_names)} image file(s) in this listing: {dict(counts)}")
+    if truncated:
+        print(
+            f"[{label}] listing looks paginated (>={len(names)} files, dataset is likely larger) -- "
+            "treating the heuristic counts above as informational only, not a hard pass/fail."
+        )
+        return
     if require_label is not None and counts.get(require_label, 0) == 0:
         raise RuntimeError(
-            f"[{label}] 0 files matched required label '{require_label}' in the Kaggle listing -- "
-            "the folder-name heuristic won't survive a full download as-is. Inspect the sample "
-            "filenames printed above and fix the heuristic before downloading."
+            f"[{label}] 0 image files matched required label '{require_label}' in the (complete) Kaggle "
+            "listing -- the folder-name heuristic won't survive a full download as-is. Inspect the "
+            "sample filenames printed above and fix the heuristic before downloading."
         )
 
 
-def test_sources(n_coco_sample: int = 200) -> None:
+def test_sources(n_coco_sample: int = 200, skip_ps_battles: bool = True) -> None:
     """Cheap, no-full-download validation of every source -- run this once
     (`python data/download.py --test`) before committing to the full
-    download. Catches a broken Kaggle token, a changed HF schema, or
-    PS-Battles' unverified folder layout in seconds instead of after paying
-    for gigabytes of transfer."""
+    download. Catches a broken Kaggle token or a changed HF schema in
+    seconds instead of after paying for gigabytes of transfer.
+
+    skip_ps_battles defaults to True: the timocasti/psbattles Kaggle slug
+    turned out to ship only a downloader script + TSVs, not actual images
+    (confirmed via this same test) -- using it would mean running an
+    unvetted script against ~2018-era URLs, reintroducing the exact
+    link-rot risk this source was picked to avoid. edited stays CASIA-only
+    for now; the PS-Battles code path is left in place (inert, since
+    EDITED_SRC_PSBATTLES stays empty) in case a real image mirror turns up
+    later -- pass skip_ps_battles=False to re-check it."""
     from data.face_filter import classify_ps_battles_path
 
     tasks = {
@@ -229,10 +269,11 @@ def test_sources(n_coco_sample: int = 200) -> None:
             lambda p: "tampered" if p.name.lower().startswith("tp_") else "other",
             require_label="tampered",
         ),
-        "PS-Battles": lambda: _test_kaggle_source(
-            PS_BATTLES_DATASET, "PS-Battles", classify_ps_battles_path, require_label="derivative"
-        ),
     }
+    if not skip_ps_battles:
+        tasks["PS-Battles"] = lambda: _test_kaggle_source(
+            PS_BATTLES_DATASET, "PS-Battles", classify_ps_battles_path, require_label="derivative"
+        )
     failures = {}
     with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
         futures = {pool.submit(fn): name for name, fn in tasks.items()}
@@ -260,7 +301,15 @@ def main() -> None:
     )
     parser.add_argument("--skip-coco-ai", action="store_true")
     parser.add_argument("--skip-casia", action="store_true")
-    parser.add_argument("--skip-ps-battles", action="store_true")
+    parser.add_argument(
+        "--include-ps-battles",
+        action="store_true",
+        help=(
+            "opt-in: the timocasti/psbattles Kaggle slug ships only a downloader script + TSVs, not "
+            "actual images -- off by default since using it means running an unvetted script against "
+            "~2018-era URLs (link-rot risk). edited is CASIA-only unless this is passed."
+        ),
+    )
     parser.add_argument("--force-casia", action="store_true", help="re-download CASIA even if edited_src is non-empty")
     parser.add_argument(
         "--force-ps-battles", action="store_true", help="re-download PS-Battles even if its raw dir is non-empty"
@@ -268,19 +317,19 @@ def main() -> None:
     parser.add_argument(
         "--test",
         action="store_true",
-        help="validate all sources (auth, schema, PS-Battles heuristic) without downloading, then exit",
+        help="validate all sources (auth, schema) without downloading, then exit",
     )
     args = parser.parse_args()
 
     if args.test:
-        test_sources()
+        test_sources(skip_ps_battles=not args.include_ps_battles)
         return
 
     download_all(
         n_pairs=args.n_pairs,
         skip_coco_ai=args.skip_coco_ai,
         skip_casia=args.skip_casia,
-        skip_ps_battles=args.skip_ps_battles,
+        skip_ps_battles=not args.include_ps_battles,
         force_casia=args.force_casia,
         force_ps_battles=args.force_ps_battles,
     )
