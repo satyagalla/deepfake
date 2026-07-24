@@ -1,7 +1,8 @@
-"""Uniform MTCNN face detect+crop across all three raw sources, plus a
+"""Uniform MTCNN face detect+crop across all raw sources, plus a
 source-image-level stratified train/val split and manifest.csv.
 
-Run after data/download.py has populated data_raw/{real_src,deepfake_src,edited_src}.
+Run after data/download.py has populated data_raw/{real_src,deepfake_src,
+edited_src,edited_src_psbattles}.
 """
 import argparse
 import csv
@@ -22,6 +23,7 @@ from config import (
     DEEPFAKE_SRC,
     DEVICE,
     EDITED_SRC,
+    EDITED_SRC_PSBATTLES,
     FACE_MARGIN,
     IMAGE_SIZE,
     MANIFEST_PATH,
@@ -33,12 +35,13 @@ from config import (
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 BATCH_SIZE = 32
 DEEPFAKE_SURVIVAL_FLOOR = 300  # per data_download.md: stop and flag if fewer survive
-SOURCE_NAME = {"real": "COCO_AI", "deepfake": "COCO_AI", "edited": "CASIA_v2.0"}
 
 
 def find_casia_tampered(root: Path) -> list[Path]:
     """CASIA v2.0 marks tampered images with a 'Tp_' filename prefix (vs 'Au_'
     for authentic) regardless of the exact folder layout a mirror unzips to."""
+    if not root.exists():
+        return []
     all_imgs = [p for p in root.rglob("*") if p.suffix.lower() in IMG_EXTS]
     tampered = [p for p in all_imgs if p.name.lower().startswith("tp_")]
     if not tampered:
@@ -47,13 +50,68 @@ def find_casia_tampered(root: Path) -> list[Path]:
     return tampered
 
 
-def list_source_images(class_name: str) -> list[Path]:
+def classify_ps_battles_path(p: Path) -> str | None:
+    """Folder-name heuristic for the unverified timocasti/psbattles Kaggle
+    layout: "derivative" (Photoshopped, what we want for `edited`),
+    "original" (ignored, same reason CASIA's authentic set is ignored), or
+    None if neither signal is present. Shared between find_ps_battles_derivatives
+    (checked against real downloaded files) and download.py's test_sources()
+    (checked against Kaggle's file listing before downloading anything) so
+    both use the exact same rule."""
+    parts = [s.lower() for s in p.parts]
+    if any("photoshop" in s or "derivativ" in s or "manipulat" in s for s in parts):
+        return "derivative"
+    if any("original" in s for s in parts):
+        return "original"
+    return None
+
+
+def find_ps_battles_derivatives(root: Path) -> list[Path]:
+    """PS-Battles ships an originals/derivatives split (originals.tsv vs.
+    photoshops.tsv on the source repo). The on-disk layout of the
+    timocasti/psbattles Kaggle mirror this project downloads from hasn't
+    been independently inspected, so this looks for a folder-name signal
+    and REFUSES to guess if it can't find one -- silently treating all
+    ~103k images as "edited" would mislabel ~11k pristine originals.
+    If this raises, inspect the actual unzipped structure and adjust
+    classify_ps_battles_path() above. Run `python data/download.py --test`
+    first to check this against Kaggle's file listing before downloading."""
+    if not root.exists():
+        return []
+    all_imgs = [p for p in root.rglob("*") if p.suffix.lower() in IMG_EXTS]
+    if not all_imgs:
+        return []
+
+    labeled = [(p, classify_ps_battles_path(p)) for p in all_imgs]
+    derivatives = [p for p, lab in labeled if lab == "derivative"]
+    originals = [p for p, lab in labeled if lab == "original"]
+    if derivatives:
+        print(
+            f"PS-Battles: {len(all_imgs)} images found under {root}, {len(derivatives)} identified "
+            f"as derivatives (edited), {len(originals)} as originals (ignored)."
+        )
+        return derivatives
+
+    raise RuntimeError(
+        f"PS-Battles: could not distinguish original vs. derivative images under {root} by folder "
+        f"naming (inspect it, e.g. list a few subfolders/files under {root}, and adjust the label() "
+        "heuristic in find_ps_battles_derivatives()). Refusing to guess -- silently including "
+        "originals would mislabel pristine images as edited."
+    )
+
+
+def list_source_images(class_name: str) -> list[tuple[Path, str]]:
+    """Returns (path, source_dataset_name) pairs -- edited is multi-source
+    (CASIA + PS-Battles) for manipulation-technique diversity; real/deepfake
+    stay single-source (COCO_AI) since they must be paired, not diverse."""
     if class_name == "real":
-        return sorted(p for p in REAL_SRC.iterdir() if p.suffix.lower() in IMG_EXTS)
+        return [(p, "COCO_AI") for p in sorted(REAL_SRC.iterdir()) if p.suffix.lower() in IMG_EXTS]
     if class_name == "deepfake":
-        return sorted(p for p in DEEPFAKE_SRC.iterdir() if p.suffix.lower() in IMG_EXTS)
+        return [(p, "COCO_AI") for p in sorted(DEEPFAKE_SRC.iterdir()) if p.suffix.lower() in IMG_EXTS]
     if class_name == "edited":
-        return sorted(find_casia_tampered(EDITED_SRC))
+        casia = [(p, "CASIA_v2.0") for p in find_casia_tampered(EDITED_SRC)]
+        psb = [(p, "PS-Battles") for p in find_ps_battles_derivatives(EDITED_SRC_PSBATTLES)]
+        return sorted(casia + psb, key=lambda t: t[0])
     raise ValueError(class_name)
 
 
@@ -62,11 +120,33 @@ def batched(seq: list, n: int):
         yield seq[i : i + n]
 
 
+def sort_by_dimensions(paths: list[Path]) -> list[Path]:
+    """mtcnn(list) only batches images that share identical pixel
+    dimensions (see detect_and_crop) -- within an unsorted file order,
+    same-size images rarely land in the same BATCH_SIZE window (diagnostic
+    run measured 74% of size-groups falling back to one-at-a-time for the
+    varied-resolution `real` class, vs. 0% for uniform-resolution
+    `deepfake`, and `real` ran at ~0.6x deepfake's img/s as a direct
+    result). Sorting by (width, height) first -- a cheap header-only read,
+    no pixel decode -- clusters same-size images together so batching
+    actually triggers, without changing which images get processed."""
+    sized = []
+    for p in paths:
+        try:
+            with Image.open(p) as im:
+                sized.append((im.size, p))
+        except Exception:
+            sized.append(((0, 0), p))  # unreadable -- let detect_and_crop's open() report it
+    sized.sort(key=lambda t: t[0])
+    return [p for _, p in sized]
+
+
 def detect_and_crop(mtcnn: MTCNN, paths: list[Path], class_name: str) -> list[tuple[Path, Image.Image]]:
     results = []
     seen = detected = 0
     t_decode = t_infer = t_pack = 0.0
     group_size_counts: Counter = Counter()
+    paths = sort_by_dimensions(paths)
     pbar = tqdm(total=len(paths), desc=f"[{class_name}] detect+crop", unit="img")
     for batch_paths in batched(paths, BATCH_SIZE):
         imgs, valid_paths = [], []
@@ -137,10 +217,15 @@ def detect_and_crop(mtcnn: MTCNN, paths: list[Path], class_name: str) -> list[tu
     return results
 
 
-def pair_key(class_name: str, path: Path) -> str:
+def pair_key(class_name: str, path: Path, source: str) -> str:
     """real/deepfake share filenames from download.py's paired COCO_AI export --
-    group by that shared stem so a pair always lands in the same split."""
-    return f"pair:{path.stem}" if class_name in ("real", "deepfake") else f"single:{path.stem}"
+    group by that shared stem so a pair always lands in the same split.
+    edited is multi-source (CASIA + PS-Battles) now, so key by source too --
+    otherwise two different sources reusing the same stem (e.g. both writing
+    "00001.jpg") would incorrectly get treated as one group."""
+    if class_name in ("real", "deepfake"):
+        return f"pair:{path.stem}"
+    return f"single:{source}:{path.stem}"
 
 
 def stratified_split(items: list[tuple[str, tuple]], seed: int, val_fraction: float):
@@ -205,12 +290,18 @@ def main() -> None:
         # floor below, so a doomed run fails in minutes instead of after
         # also paying for CASIA's much larger edited-class pass.
         for cls in sorted(CLASSES, key=lambda c: 0 if c == "deepfake" else 1):
-            src_paths = list_source_images(cls)
-            if not src_paths:
+            src_items = list_source_images(cls)
+            if not src_items:
                 print(f"WARNING: no source images found for class '{cls}' -- did data/download.py run?")
                 continue
-            if diag:
-                src_paths = src_paths[: args.limit]
+            source_of = {p: s for p, s in src_items}
+            src_paths = [p for p, _ in src_items]
+            if diag and len(src_paths) > args.limit:
+                # random.sample, not a prefix slice -- CASIA's paths come out of
+                # rglob+sorted (grouped by folder/tamper-type, not shuffled), so a
+                # prefix can land entirely inside one non-face category and read as
+                # a false "0% survival" that's really a sampling artifact.
+                src_paths = random.Random(SEED).sample(src_paths, args.limit)
 
             cropped = detect_and_crop(mtcnn, src_paths, cls)
 
@@ -222,7 +313,7 @@ def main() -> None:
                     f"accepted-tradeoffs section) before building the rest of the pipeline."
                 )
 
-            items = [(pair_key(cls, p), (p, img)) for p, img in cropped]
+            items = [(pair_key(cls, p, source_of[p]), (p, img)) for p, img in cropped]
             train_items, val_items = stratified_split(items, seed=SEED, val_fraction=args.val_fraction)
 
             t_save_cls = 0.0
@@ -236,7 +327,7 @@ def main() -> None:
                     img.save(out_path, quality=95)
                     t_save_cls += time.perf_counter() - t0
                     rel_path = out_path.relative_to(out_dir).as_posix()
-                    writer.writerow([rel_path, cls, split_name, SOURCE_NAME[cls]])
+                    writer.writerow([rel_path, cls, split_name, source_of[src_path]])
                     balance_counts[(cls, split_name)] += 1
             f.flush()
             t_save_total += t_save_cls

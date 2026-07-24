@@ -10,10 +10,10 @@ Prep-phase only — must finish **before** the 1.5hr training clock starts (per 
 
 ## 1. Download
 
-Fetch three sources into separate raw folders (`deepfake_src`, `real_src`, `edited_src`):
+Fetch sources into separate raw folders (`deepfake_src`, `real_src`, `edited_src`, `edited_src_psbattles`):
 - **Deepfake:** the DALL-E 3 slice from COCO_AI/SynthBuster.
 - **Real:** the pristine images paired 1:1 with that same DALL-E 3 slice (not an unrelated curated set — see `architecture_decisions.md`'s Dataset section for why).
-- **Edited:** CASIA v2.0's *tampered* images only. CASIA also ships its own authentic set — ignore it; the real class is single-sourced from `real_src` to avoid mixing two different real-image pools.
+- **Edited:** CASIA v2.0's *tampered* images, plus PS-Battles' *derivative* (Photoshopped) images for manipulation-technique diversity (CASIA alone is splice/copy-move/removal only). Both datasets also ship their own authentic/original sets — ignore both; the real class stays single-sourced from `real_src` to avoid mixing real-image pools. PS-Battles' Kaggle mirror layout hasn't been independently inspected — `face_filter.py`'s `find_ps_battles_derivatives()` looks for a folder-name signal (`photoshop`/`derivative`/`manipulat` vs. `original`) and raises loudly instead of guessing if it can't find one; if it raises, inspect the unzipped structure and adjust the heuristic.
 
 **COCO_AI pairs are sampled from all of COCO, not just person-containing images** — most of COCO has no face in frame at all, which is the actual cause of face-filtering's low survival rate (not the detector). `data/download.py` filters on the row's `caption` field for person-indicating words before saving a pair, and keeps collecting from the (shuffled) stream until `--n-pairs` *matching* pairs are found, not just the first N raw rows.
 
