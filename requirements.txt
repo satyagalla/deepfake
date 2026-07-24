@@ -9,3 +9,4 @@ timm
 facenet-pytorch
 datasets
 kaggle
+gradio
