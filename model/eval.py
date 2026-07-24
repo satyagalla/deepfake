@@ -2,15 +2,23 @@
 matrix, Grad-CAM on the spatial branch + gate contribution weights (paired,
 per model_code.md section 6 -- never reported separately)."""
 import argparse
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_support, roc_auc_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import CHECKPOINT_DIR, CLASSES, DEVICE, EMBED_DIM
+from config import CHECKPOINT_DIR, CLASSES, DEVICE, EMBED_DIM, EVAL_DIR
 from model.dataset import ForgeryDataset, get_dataloader
 from model.fusion import ForgeryClassifier
 
@@ -81,6 +89,25 @@ def print_report(metrics: dict) -> None:
     )
 
 
+def save_metrics(metrics: dict, out_dir: Path = EVAL_DIR, tag: str = "val") -> Path:
+    """Write metrics to <out_dir>/metrics_<tag>_<timestamp>.json (confusion
+    matrix as nested list). Returns the written path."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    payload = {
+        "macro_f1": metrics["macro_f1"],
+        "precision": metrics["precision"],
+        "recall": metrics["recall"],
+        "roc_auc_ovr": metrics["roc_auc_ovr"],
+        "confusion_matrix": metrics["confusion_matrix"].tolist(),
+        "classes": CLASSES,
+    }
+    out_path = out_dir / f"metrics_{tag}_{stamp}.json"
+    out_path.write_text(json.dumps(payload, indent=2))
+    print(f"Saved metrics -> {out_path}")
+    return out_path
+
+
 def grad_cam(model: ForgeryClassifier, rgb, fft_mag, srm_residual, target_class: int, device: str = DEVICE):
     """Grad-CAM on the spatial branch's last conv feature map for one sample.
     Returns (heatmap ndarray [H,W] in [0,1], gate_weights dict)."""
@@ -106,14 +133,27 @@ def grad_cam(model: ForgeryClassifier, rgb, fft_mag, srm_residual, target_class:
     return cam.numpy(), gate
 
 
-def explainability_dump(model: ForgeryClassifier, dataset: ForgeryDataset, samples_per_class: int = 3, device: str = DEVICE):
+def explainability_dump(
+    model: ForgeryClassifier,
+    dataset: ForgeryDataset,
+    samples_per_class: int = 3,
+    device: str = DEVICE,
+    save_dir: Path | None = EVAL_DIR,
+):
     """Grad-CAM heatmap + gate contribution weights for a handful of val
-    samples per class -- the paired explainability deliverable."""
+    samples per class -- the paired explainability deliverable. If save_dir is
+    set (default EVAL_DIR), writes each overlay as a PNG plus one
+    explainability.json index so the dump survives a runtime recycle and any
+    sample can be re-viewed later without re-running inference."""
     by_class = {cls: [] for cls in CLASSES}
     for i in range(len(dataset)):
         cls = dataset.df.iloc[i]["class"]
         if len(by_class[cls]) < samples_per_class:
             by_class[cls].append(i)
+
+    if save_dir is not None:
+        save_dir = Path(save_dir)
+        (save_dir / "gradcam").mkdir(parents=True, exist_ok=True)
 
     results = []
     for cls, indices in by_class.items():
@@ -122,11 +162,53 @@ def explainability_dump(model: ForgeryClassifier, dataset: ForgeryDataset, sampl
             cam, gate = grad_cam(
                 model, sample["rgb"], sample["fft_mag"], sample["srm_residual"], CLASSES.index(cls), device
             )
-            results.append({"path": sample["path"], "true_class": cls, "gradcam": cam, "gate_weights": gate})
+            record = {"path": sample["path"], "true_class": cls, "gradcam": cam, "gate_weights": gate}
+
+            if save_dir is not None:
+                overlay_path = save_dir / "gradcam" / f"{cls}_{idx}.png"
+                _save_gradcam_overlay(sample["path"], cam, gate, cls, overlay_path)
+                record["overlay_path"] = str(overlay_path)
+
+            results.append(record)
             gate_str = {k: round(v, 3) for k, v in gate.items()}
             print(f"{sample['path']} [{cls}]: gate={gate_str}")
 
+    if save_dir is not None:
+        index_path = save_dir / "explainability.json"
+        index = [
+            {
+                "path": r["path"],
+                "true_class": r["true_class"],
+                "gate_weights": r["gate_weights"],
+                "overlay_path": r.get("overlay_path"),
+            }
+            for r in results
+        ]
+        index_path.write_text(json.dumps(index, indent=2))
+        print(f"Saved explainability index -> {index_path}")
+
     return results
+
+
+def _save_gradcam_overlay(image_path: str, cam: np.ndarray, gate: dict, true_class: str, out_path: Path) -> None:
+    img = Image.open(image_path).convert("RGB")
+    fig, ax = plt.subplots(figsize=(4, 4))
+    ax.imshow(img)
+    ax.imshow(cam, cmap="jet", alpha=0.4)
+    gate_str = ", ".join(f"{k}:{v:.2f}" for k, v in gate.items())
+    ax.set_title(f"{true_class}\n{gate_str}", fontsize=8)
+    ax.axis("off")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
+def load_explainability_index(save_dir: Path = EVAL_DIR) -> list[dict]:
+    """Read back a previously saved explainability.json index (path, true_class,
+    gate_weights, overlay_path) -- use to browse/re-visualize past runs without
+    re-running inference."""
+    index_path = Path(save_dir) / "explainability.json"
+    return json.loads(index_path.read_text())
 
 
 def main():
@@ -140,6 +222,7 @@ def main():
     val_loader = get_dataloader("val", batch_size=args.batch_size, shuffle=False, num_workers=4)
     metrics = compute_metrics(model, val_loader)
     print_report(metrics)
+    save_metrics(metrics)
 
     print("\n=== Explainability dump (Grad-CAM + gate weights) ===")
     val_dataset = ForgeryDataset("val")
