@@ -11,6 +11,7 @@ import torch.nn as nn
 from sklearn.metrics import f1_score, precision_recall_fscore_support
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
+from tqdm.auto import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import CHECKPOINT_DIR, CLASSES, DEVICE, EMBED_DIM
@@ -34,7 +35,7 @@ def make_warmup_cosine_scheduler(optimizer, total_steps: int, warmup_frac: float
 def evaluate(model: nn.Module, loader, device: str):
     model.eval()
     all_preds, all_labels = [], []
-    for batch in loader:
+    for batch in tqdm(loader, desc="Validating", unit="batch", leave=False):
         rgb = batch["rgb"].to(device, non_blocking=True)
         fft_mag = batch["fft_mag"].to(device, non_blocking=True)
         srm = batch["srm_residual"].to(device, non_blocking=True)
@@ -86,7 +87,9 @@ def train(
         model.train()
         epoch_start = time.time()
         running_loss = 0.0
-        for batch in train_loader:
+        seen = 0
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}", unit="batch")
+        for batch in pbar:
             rgb = batch["rgb"].to(device, non_blocking=True)
             fft_mag = batch["fft_mag"].to(device, non_blocking=True)
             srm = batch["srm_residual"].to(device, non_blocking=True)
@@ -103,6 +106,9 @@ def train(
             scheduler.step()
 
             running_loss += loss.item() * rgb.size(0)
+            seen += rgb.size(0)
+            pbar.set_postfix(loss=running_loss / seen)
+        pbar.close()
 
         train_loss = running_loss / len(train_loader.dataset)
         macro_f1, precision, recall = evaluate(model, val_loader, device)
