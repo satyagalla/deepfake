@@ -309,7 +309,7 @@ def main() -> None:
                 raise SystemExit(
                     f"STOP: only {len(cropped)} deepfake faces survived filtering "
                     f"(floor: {DEEPFAKE_SURVIVAL_FLOOR}). Too few to train on -- revisit "
-                    f"the deepfake source choice (see architecture_decisions.md's "
+                    f"the deepfake source choice (see 001_architecture_decisions.md's "
                     f"accepted-tradeoffs section) before building the rest of the pipeline."
                 )
 

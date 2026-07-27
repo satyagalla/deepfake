@@ -10,7 +10,7 @@ Docs are split by lifecycle, not just topic, so it's obvious whether a file is s
 ## Contents
 
 **Decisions**
-- [architecture_decisions.md](decisions/architecture_decisions.md) - 3-branch fusion architecture, backbone choices, dataset selection, with reasoning and discarded alternatives.
+- [001_architecture_decisions.md](decisions/001_architecture_decisions.md) - 3-branch fusion architecture, backbone choices, dataset selection, with reasoning and discarded alternatives.
 
 **Reference**
 - [data_download.md](reference/data_download.md) - download + face-filter pipeline for the 3 class datasets (code: `data/download.py`, `data/face_filter.py`).

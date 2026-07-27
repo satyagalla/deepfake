@@ -22,7 +22,7 @@ Never for: sequential steps, code review of your own recent edits, single-file t
 
 - `notes.md` - guidelines and to-dos for the user
 - `docs/README.md` - index of all docs below, with the lifecycle convention (decisions / reference / research / investigations) explained
-- `docs/decisions/architecture_decisions.md` - doc describing requirements and architecture decisions with reasoning, incl. finalized dataset choice
+- `docs/decisions/001_architecture_decisions.md` - doc describing requirements and architecture decisions with reasoning, incl. finalized dataset choice
 - `docs/reference/data_download.md` - instructions (no code) for downloading + face-filtering the 3 class datasets; code in `data/download.py` and `data/face_filter.py`
 - `docs/reference/model_code.md` - instructions (no code) for the 3-branch fusion model, training, and eval; code in `model/*.py` + `forgery_classifier.ipynb`
 - `docs/research/deepfake_detection_research.md` - deep research doc on deepfake detection models for classifying real, edited (AI generated and human) and deepfake classes
@@ -39,7 +39,7 @@ Never for: sequential steps, code review of your own recent edits, single-file t
 
 **Done:**
 
-- Architecture finalized: 3-branch fusion (EfficientNet-B4 spatial + FFT spectral CNN + SRM noise-residual CNN -> gated fusion), see `docs/decisions/architecture_decisions.md`
+- Architecture finalized: 3-branch fusion (EfficientNet-B4 spatial + FFT spectral CNN + SRM noise-residual CNN -> gated fusion), see `docs/decisions/001_architecture_decisions.md`
 - Dataset finalized: one dataset per class (deepfake = DALL-E 3 slice of COCO_AI/SynthBuster, real = its paired originals, edited = CASIA v2.0), uniform face-detect+crop (MTCNN via `facenet_pytorch`) across train and test since the test set guarantees a face is present
 - Data-download and model-implementation instructions written (`docs/reference/data_download.md`, `docs/reference/model_code.md`)
 - `data/*.py`, `model/*.py`, and `forgery_classifier.ipynb` implemented per those instructions; full run executed (`forgery_classifier_final.ipynb`), results/limitations written up in `README.md`

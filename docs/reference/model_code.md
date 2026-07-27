@@ -1,6 +1,6 @@
 # Model Implementation — Instructions
 
-Implements the 3-branch fusion architecture from `architecture_decisions.md`. Reads from the `train/val` folders and `manifest.csv` produced per `data_download.md`.
+Implements the 3-branch fusion architecture from `001_architecture_decisions.md`. Reads from the `train/val` folders and `manifest.csv` produced per `data_download.md`.
 
 ## File layout
 
@@ -13,7 +13,7 @@ Implements the 3-branch fusion architecture from `architecture_decisions.md`. Re
 
 ## 0. GPU-tier check first
 
-Confirm the assigned GPU immediately. Everything below assumes the A100 40GB path from `architecture_decisions.md`'s GPU-tier table. If a T4 or L4 is assigned instead, switch to that table's fallback config (smaller backbone, partial freeze, stacked-channel input) rather than attempting the full 3-branch version under time pressure.
+Confirm the assigned GPU immediately. Everything below assumes the A100 40GB path from `001_architecture_decisions.md`'s GPU-tier table. If a T4 or L4 is assigned instead, switch to that table's fallback config (smaller backbone, partial freeze, stacked-channel input) rather than attempting the full 3-branch version under time pressure.
 
 ## 1. Per-sample inputs
 
@@ -57,9 +57,9 @@ Both heads read the same concatenated embedding; they are two separate output pr
 - Macro-F1, per-class precision/recall, per-class one-vs-rest ROC-AUC.
 - Full 3x3 confusion matrix, with explicit attention to the edited↔deepfake cell — that's the one novel failure mode this task setup introduces, and it's the cell most likely to be misleadingly hidden by an overall-accuracy number.
 - Grad-CAM on the spatial branch's last conv feature map for a handful of validation samples per class.
-- The gate's per-branch contribution weights for those same samples, reported alongside the Grad-CAM heatmap — the paired output (heatmap + branch-contribution percentages) is the explainability deliverable described in `architecture_decisions.md`'s overview diagram; don't report one without the other.
+- The gate's per-branch contribution weights for those same samples, reported alongside the Grad-CAM heatmap — the paired output (heatmap + branch-contribution percentages) is the explainability deliverable described in `001_architecture_decisions.md`'s overview diagram; don't report one without the other.
 
-## Time budget checkpoints (A100 path, from architecture_decisions.md)
+## Time budget checkpoints (A100 path, from 001_architecture_decisions.md)
 
 | Stage | Target |
 |---|---|

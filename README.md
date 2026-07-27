@@ -8,10 +8,10 @@ Trained and evaluated end-to-end on Colab (A100). Validation macro-F1: **0.9079*
 
 ## Main architecture decisions
 
-- **EfficientNet-B4 over Xception.** Both are spatial-texture backbones — same evidence type, so running both would be two opinions on one signal rather than diverse evidence. Picked EfficientNet-B4 first for similar-or-better accuracy with fewer parameters than Xception (~19M vs ~22.9M params, 82.6–83% vs 79.0% top-1 on ImageNet). Further research showed fewer parameters doesn't mean less compute or faster training, and a controlled benchmark (DeepfakeBench) found the two perform about the same on forgery detection — so this is a parameter-efficiency choice, not a proven accuracy or speed edge. Full comparison (incl. why not ResNet-50, CLIP-ViT, DINOv2) in `docs/decisions/architecture_decisions.md` → Branch 1.
-- **Why a 3-stream pipeline, not 1, 2, or 4+.** 1 branch (RGB-only) is a single opaque logit — fails the explainability requirement and risks learning dataset fingerprints instead of manipulation cues. 2 branches (spatial + spectral) leaves `edited` with no branch built for its actual failure mode: a splice doesn't disturb global frequency statistics much, so it needs the noise-residual branch to catch it. 4+ branches has diminishing returns and makes the gate's output harder to read. 3 branches map cleanly onto 3 manipulation types — structural, generative-frequency, boundary-splice. See `docs/decisions/architecture_decisions.md` → "Why 3 signal branches."
+- **EfficientNet-B4 over Xception.** Both are spatial-texture backbones — same evidence type, so running both would be two opinions on one signal rather than diverse evidence. Picked EfficientNet-B4 first for similar-or-better accuracy with fewer parameters than Xception (~19M vs ~22.9M params, 82.6–83% vs 79.0% top-1 on ImageNet). Further research showed fewer parameters doesn't mean less compute or faster training, and a controlled benchmark (DeepfakeBench) found the two perform about the same on forgery detection — so this is a parameter-efficiency choice, not a proven accuracy or speed edge. Full comparison (incl. why not ResNet-50, CLIP-ViT, DINOv2) in `docs/decisions/001_architecture_decisions.md` → Branch 1.
+- **Why a 3-stream pipeline, not 1, 2, or 4+.** 1 branch (RGB-only) is a single opaque logit — fails the explainability requirement and risks learning dataset fingerprints instead of manipulation cues. 2 branches (spatial + spectral) leaves `edited` with no branch built for its actual failure mode: a splice doesn't disturb global frequency statistics much, so it needs the noise-residual branch to catch it. 4+ branches has diminishing returns and makes the gate's output harder to read. 3 branches map cleanly onto 3 manipulation types — structural, generative-frequency, boundary-splice. See `docs/decisions/001_architecture_decisions.md` → "Why 3 signal branches."
 
-See `docs/research/deepfake_detection_research.md` for the SOTA survey and `docs/decisions/architecture_decisions.md` for the finalized architecture with full reasoning.
+See `docs/research/deepfake_detection_research.md` for the SOTA survey and `docs/decisions/001_architecture_decisions.md` for the finalized architecture with full reasoning.
 
 ## Architecture
 
@@ -31,11 +31,11 @@ RGB image (~380x380)
                                                       -- the explainability signal)
 ```
 
-Grad-CAM on the spatial branch adds a visual "where" heatmap alongside the gate's "which evidence type" weighting. Full reasoning for each branch choice, the fusion mechanism, and discarded alternatives is in `docs/decisions/architecture_decisions.md`.
+Grad-CAM on the spatial branch adds a visual "where" heatmap alongside the gate's "which evidence type" weighting. Full reasoning for each branch choice, the fusion mechanism, and discarded alternatives is in `docs/decisions/001_architecture_decisions.md`.
 
 ## Dataset
 
-One dataset per class (see `docs/decisions/architecture_decisions.md` → Dataset for why):
+One dataset per class (see `docs/decisions/001_architecture_decisions.md` → Dataset for why):
 
 | Class | Source |
 |---|---|
@@ -45,7 +45,7 @@ One dataset per class (see `docs/decisions/architecture_decisions.md` → Datase
 
 All three classes are face-detected and cropped uniformly (MTCNN via `facenet_pytorch`) — see `docs/reference/data_download.md` for the full pipeline.
 
-**Real and deepfake are paired 1:1 from the same COCO_AI rows** (`coco_image` / `dalle_image` per row) rather than sourced from two unrelated datasets — this was a deliberate choice so the model can't shortcut on dataset fingerprint (resolution, JPEG quality, framing) instead of actual manipulation cues; see `docs/decisions/architecture_decisions.md` → Dataset.
+**Real and deepfake are paired 1:1 from the same COCO_AI rows** (`coco_image` / `dalle_image` per row) rather than sourced from two unrelated datasets — this was a deliberate choice so the model can't shortcut on dataset fingerprint (resolution, JPEG quality, framing) instead of actual manipulation cues; see `docs/decisions/001_architecture_decisions.md` → Dataset.
 
 **Dataset iteration:** started at 1,000 COCO_AI pairs, raised to 3,000-5,000 after an early diagnostic run showed most of raw COCO has no person/face in frame at all (not a detector problem) — `data/download.py` now pre-filters on caption wording for person-indicating words before sampling pairs, and `data/face_filter.py` enforces a 300-image survival floor per class after MTCNN filtering.
 
@@ -82,7 +82,7 @@ edited→deepfake confusions: **0**. deepfake→edited confusions: **1**. This i
 | edited | 0.270 | 0.367 | 0.363 |
 | deepfake | 0.291 | 0.485 | 0.225 |
 
-Matches the architecture's intent (`docs/decisions/architecture_decisions.md`): the spectral branch carries the most weight for `deepfake` (0.485) — the diffusion-artifact spectral-falloff signal it was designed to catch — while `edited` leans relatively more on noise-residual (0.363) than `deepfake` does (0.225), consistent with edited's splice-boundary noise-discontinuity tell vs. deepfake's single-generation-process uniformity.
+Matches the architecture's intent (`docs/decisions/001_architecture_decisions.md`): the spectral branch carries the most weight for `deepfake` (0.485) — the diffusion-artifact spectral-falloff signal it was designed to catch — while `edited` leans relatively more on noise-residual (0.363) than `deepfake` does (0.225), consistent with edited's splice-boundary noise-discontinuity tell vs. deepfake's single-generation-process uniformity.
 
 **Caveat on this signal:** the gate weight is a *contribution-to-the-fused-decision* score, not a per-branch accuracy score — it says how much each embedding influenced the concatenated decision, not how well each branch would classify on its own. A missed addition (noted mid-build, in `notes.md`) was a small auxiliary classifier head per branch, evaluated *before* the merge, which would give each stream's own standalone accuracy/F1 as a direct comparison point instead of only an indirect contribution weight. The numbers above are the best explainability read available without that addition, i.e. without changing the architecture and re-training — treat them as directional (which branch mattered more for which class) rather than as a per-branch performance number.
 
@@ -102,7 +102,7 @@ Three live-demo runs on held-out val-set images, picked because a human cannot c
 <tr><td align="center"><b>real</b><br><img src="docs/screenshots/demo_real.png" width="360"></td></tr>
 </table>
 
-This is the strongest evidence in this project that the 3-branch design is doing what `docs/decisions/architecture_decisions.md` intended: the spectral and noise-residual branches are picking up a manipulation signature that survives heavy blur/downsampling — a signature independent of whether a human viewer can consciously see it. It also rules out the simplest alternative explanation for the model's success on val data: that it's merely learning to key on sharpness/resolution differences between classes. All three classes are blurred to a similar degree here, and the model still separates them correctly with confident gate weights pointing at the expected branch (spectral leads for `deepfake`, consistent with the diffusion spectral-falloff tell; noise-residual ties or leads for `edited`, consistent with the splice-boundary tell). **The practical implication: this is a data-coverage problem, not a capability ceiling.** Feeding the same architecture sharp, high-resolution output from modern generators (Imagen, gpt-image-1) as training data should let it learn each generator's own spectral/noise signature the same way it learned DALL-E 3's — there's no reason to expect the underlying approach to need to change, only the training set.
+This is the strongest evidence in this project that the 3-branch design is doing what `docs/decisions/001_architecture_decisions.md` intended: the spectral and noise-residual branches are picking up a manipulation signature that survives heavy blur/downsampling — a signature independent of whether a human viewer can consciously see it. It also rules out the simplest alternative explanation for the model's success on val data: that it's merely learning to key on sharpness/resolution differences between classes. All three classes are blurred to a similar degree here, and the model still separates them correctly with confident gate weights pointing at the expected branch (spectral leads for `deepfake`, consistent with the diffusion spectral-falloff tell; noise-residual ties or leads for `edited`, consistent with the splice-boundary tell). **The practical implication: this is a data-coverage problem, not a capability ceiling.** Feeding the same architecture sharp, high-resolution output from modern generators (Imagen, gpt-image-1) as training data should let it learn each generator's own spectral/noise signature the same way it learned DALL-E 3's — there's no reason to expect the underlying approach to need to change, only the training set.
 
 ## Live demo
 
@@ -135,7 +135,7 @@ CUDA is used automatically when available (`DEVICE` in `config.py`).
 | `data/download.py`, `data/face_filter.py` | Dataset download + face-detect/crop pipeline |
 | `model/branches.py`, `model/fusion.py`, `model/dataset.py`, `model/train.py`, `model/eval.py` | Model, training, and eval code |
 | `forgery_classifier.ipynb` | Colab notebook driving Data/Train/Eval end to end |
-| `docs/decisions/architecture_decisions.md`, `docs/reference/data_download.md`, `docs/reference/model_code.md` | Design docs behind the code |
+| `docs/decisions/001_architecture_decisions.md`, `docs/reference/data_download.md`, `docs/reference/model_code.md` | Design docs behind the code |
 | `docs/research/deepfake_detection_research.md` | Background research |
 | `docs/investigations/` | Dated investigation/debug reports |
 | `docs/README.md` | Index of all docs, with the lifecycle convention explained |
@@ -180,7 +180,7 @@ Beyond the current single 4-hour session:
 - [x] decide the execution environment -> Colab (300 compute units)
 - [x] understand the dataset -> real / edited / deepfake, one source dataset per class
 - [x] check SOTA for deepfake detection on real, deepfake, and edited
-- [x] finalize a model (see `docs/decisions/architecture_decisions.md` for reasoning)
+- [x] finalize a model (see `docs/decisions/001_architecture_decisions.md` for reasoning)
 - [x] decide metrics and why (macro-F1, per-class precision/recall, ROC-AUC — see `docs/reference/model_code.md`)
 - [x] decide loss function (class-weighted cross-entropy)
 - [x] find data
