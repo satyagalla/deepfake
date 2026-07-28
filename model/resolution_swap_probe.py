@@ -131,31 +131,60 @@ def _fmt_probs(probs: dict) -> str:
     return ", ".join(f"{c}={p:.3f}" for c, p in probs.items())
 
 
+def _delta_and_flip(swap: dict, target_cls: str) -> tuple[float, bool]:
+    control_p = swap["control"]["probs"][target_cls]
+    swap_p = swap["swap"]["probs"][target_cls]
+    flipped = swap["swap"]["pred"] == target_cls and swap["control"]["pred"] != target_cls
+    return swap_p - control_p, flipped
+
+
+def _finalize_buckets(buckets: dict) -> dict:
+    return {
+        key: {
+            "mean_delta_p_target": (sum(b["deltas"]) / len(b["deltas"])) if b["deltas"] else float("nan"),
+            "flip_fraction": (b["flips"] / b["n"]) if b["n"] else float("nan"),
+            "n": b["n"],
+        }
+        for key, b in buckets.items()
+    }
+
+
 def summarize(results: list[dict]) -> dict:
     """Per achievable target class: mean delta in P(target_class), real swap
     vs its matched r=1 control (the correct reference point -- isolates the
     deliberate factor increase from resize-roundtrip-only noise). Also the
     fraction of images whose pred flips to target_class under the real swap
-    but not under the control."""
+    but not under the control. Pools every source feeding a given target (e.g.
+    real->edited and deepfake->edited both land in target=edited) -- use
+    summarize_by_source() to check whether one source pair is driving the
+    pooled average."""
     all_targets = sorted({t for targets in ACHIEVABLE_TARGETS.values() for t in targets})
     buckets = {t: {"deltas": [], "flips": 0, "n": 0} for t in all_targets}
     for r in results:
         for target_cls, swap in r["resolution_swaps"].items():
-            control_p = swap["control"]["probs"][target_cls]
-            swap_p = swap["swap"]["probs"][target_cls]
+            delta, flipped = _delta_and_flip(swap, target_cls)
             bucket = buckets[target_cls]
-            bucket["deltas"].append(swap_p - control_p)
+            bucket["deltas"].append(delta)
             bucket["n"] += 1
-            if swap["swap"]["pred"] == target_cls and swap["control"]["pred"] != target_cls:
-                bucket["flips"] += 1
-    return {
-        t: {
-            "mean_delta_p_target": (sum(b["deltas"]) / len(b["deltas"])) if b["deltas"] else float("nan"),
-            "flip_fraction": (b["flips"] / b["n"]) if b["n"] else float("nan"),
-            "n": b["n"],
-        }
-        for t, b in buckets.items()
-    }
+            bucket["flips"] += flipped
+    return _finalize_buckets(buckets)
+
+
+def summarize_by_source(results: list[dict]) -> dict:
+    """Same as summarize() but keyed by (source_class, target_class) instead
+    of target_class alone -- reveals whether a pooled target's average is
+    actually a general effect or is driven by just one of its source pairs."""
+    buckets = {}
+    for r in results:
+        source_cls = r["true_class"]
+        for target_cls, swap in r["resolution_swaps"].items():
+            key = f"{source_cls}->{target_cls}"
+            bucket = buckets.setdefault(key, {"deltas": [], "flips": 0, "n": 0})
+            delta, flipped = _delta_and_flip(swap, target_cls)
+            bucket["deltas"].append(delta)
+            bucket["n"] += 1
+            bucket["flips"] += flipped
+    return _finalize_buckets(buckets)
 
 
 def print_summary(summary: dict) -> None:
@@ -165,12 +194,24 @@ def print_summary(summary: dict) -> None:
         print(f"{target_cls:>10s} {stats['mean_delta_p_target']:>20.4f} {stats['flip_fraction']:>14.3f} {stats['n']:>5d}")
 
 
-def save_probe_results(results: list[dict], summary: dict, out_dir: Path = EVAL_DIR) -> Path:
+def print_summary_by_source(summary_by_source: dict) -> None:
+    print("\n=== Breakdown by source->target pair (does one pair drive the pooled target average?) ===")
+    print(f"{'pair':>16s} {'mean_delta_p_target':>20s} {'flip_fraction':>14s} {'n':>5s}")
+    for pair, stats in summary_by_source.items():
+        print(f"{pair:>16s} {stats['mean_delta_p_target']:>20.4f} {stats['flip_fraction']:>14.3f} {stats['n']:>5d}")
+
+
+def save_probe_results(
+    results: list[dict], summary: dict, summary_by_source: dict | None = None, out_dir: Path = EVAL_DIR
+) -> Path:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_path = out_dir / f"resolution_swap_probe_{stamp}.json"
-    out_path.write_text(json.dumps({"results": results, "summary": summary}, indent=2))
+    payload = {"results": results, "summary": summary}
+    if summary_by_source is not None:
+        payload["summary_by_source"] = summary_by_source
+    out_path.write_text(json.dumps(payload, indent=2))
     print(f"\nSaved probe results -> {out_path}")
     return out_path
 
@@ -189,7 +230,9 @@ def main():
     results = run_probe(model, dataset, indices_by_class, args.probe_samples)
     summary = summarize(results)
     print_summary(summary)
-    save_probe_results(results, summary)
+    summary_by_source = summarize_by_source(results)
+    print_summary_by_source(summary_by_source)
+    save_probe_results(results, summary, summary_by_source)
 
 
 if __name__ == "__main__":
