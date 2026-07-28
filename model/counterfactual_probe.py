@@ -7,6 +7,10 @@ tests (tier 2 of the recommended next steps).
 
 Each probed sample reports its baseline (own fft/srm, no swap) alongside
 every swap result, so the shift can be read directly per image.
+
+`summarize()` alone can't tell a targeted per-class shortcut apart from a
+generic "any averaged template moves things" artifact -- `swap_target_spread()`
+disambiguates by comparing the 3 swap-target predictions against each other.
 """
 import argparse
 import json
@@ -141,12 +145,39 @@ def print_summary(summary: dict) -> None:
         print(f"{variant:>6s} {same:>26.4f} {cross:>30.4f} {cross - same:>14.4f}")
 
 
-def save_probe_results(results: list[dict], summary: dict, out_dir: Path = EVAL_DIR) -> Path:
+def swap_target_spread(results: list[dict]) -> dict:
+    """cross - same in summarize() only shows that swapping moved the
+    prediction; it can't tell apart "the model reacts to *which* class's
+    template was used" (a targeted shortcut) from "any averaged/smoothed
+    template moves things the same way regardless of source class" (a
+    generic artifact of averaging, not class-specific). This checks that by
+    comparing, per image, the 3 swap-target predictions against *each
+    other* instead of against baseline -- a small spread here means swap
+    identity barely matters, which points at the generic-averaging
+    explanation."""
+    spreads = {v: [] for v in SWAP_VARIANTS}
+    for r in results:
+        for variant in SWAP_VARIANTS:
+            prob_vectors = [r["swaps"][swap_cls][variant]["probs"] for swap_cls in CLASSES]
+            for cls in CLASSES:
+                vals = [pv[cls] for pv in prob_vectors]
+                spreads[variant].append(max(vals) - min(vals))
+    return {variant: {"mean": sum(vals) / len(vals), "max": max(vals)} for variant, vals in spreads.items()}
+
+
+def print_swap_target_spread(spread: dict) -> None:
+    print("\n=== Swap-target spread: does *which* class's template was used matter? ===")
+    print(f"{'variant':>6s} {'mean spread':>12s} {'max spread':>12s}")
+    for variant, stats in spread.items():
+        print(f"{variant:>6s} {stats['mean']:>12.4f} {stats['max']:>12.4f}")
+
+
+def save_probe_results(results: list[dict], summary: dict, spread: dict, out_dir: Path = EVAL_DIR) -> Path:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_path = out_dir / f"counterfactual_probe_{stamp}.json"
-    out_path.write_text(json.dumps({"results": results, "summary": summary}, indent=2))
+    out_path.write_text(json.dumps({"results": results, "summary": summary, "swap_target_spread": spread}, indent=2))
     print(f"\nSaved probe results -> {out_path}")
     return out_path
 
@@ -167,7 +198,9 @@ def main():
     results = run_probe(model, dataset, indices_by_class, templates, args.probe_samples, args.template_samples)
     summary = summarize(results)
     print_summary(summary)
-    save_probe_results(results, summary)
+    spread = swap_target_spread(results)
+    print_swap_target_spread(spread)
+    save_probe_results(results, summary, spread)
 
 
 if __name__ == "__main__":
