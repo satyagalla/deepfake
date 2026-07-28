@@ -1,10 +1,11 @@
-# Resolution-Swap Counterfactual Probe (spec — not yet implemented)
+# Resolution-Swap Counterfactual Probe (spec)
 
-Instructions only, no code — to be implemented as a follow-up coding task (by a Sonnet model),
+Originally written as instructions-only (no code), to be implemented as a follow-up coding task,
 the same way `docs/reference/data_download.md` and `docs/reference/model_code.md` preceded
-`data/*.py` and `model/*.py`. Code should land as a new `model/resolution_swap_probe.py`, with an
+`data/*.py` and `model/*.py`. **Implemented**: `model/resolution_swap_probe.py`, with an
 interactive companion section in `debug.ipynb` mirroring the existing
-`model/counterfactual_probe.py` / `debug.ipynb` pairing.
+`model/counterfactual_probe.py` / `debug.ipynb` pairing. Findings:
+`docs/investigations/2026-07-27-resolution-swap-probe.md`.
 
 ## What this tests
 
