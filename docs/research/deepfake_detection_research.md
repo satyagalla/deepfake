@@ -6,6 +6,27 @@ Extending a 2-class (real/fake) image classifier into a 3-class detector that se
 - **Compute:** ~300 Colab compute units, PyTorch/CUDA
 - **Prepared:** 2026-07-23
 
+---
+
+> ## Status: historical record — recommendations superseded
+>
+> **This document is preserved as the record of what the 2026-07-23 research pass found, not as current guidance.** Its survey content (§2–§4 tables, §5 metrics, §6 risks) remains useful; its *recommendations* have been superseded by decisions taken since. Errata below, added 2026-07-28.
+>
+> **§1 — the recommendation is superseded twice over.**
+>
+> - The dataset plan (FF++ + Celeb-DF for deepfake, CASIA/IMD2020/PS-Battles for edited) was replaced before implementation by [`../decisions/0001-architecture-decisions.md`](../decisions/0001-architecture-decisions.md) → Dataset, which switched to diffusion sources to match the actual eval target.
+> - The architecture recommendation (single fully-fine-tuned CNN) was implemented, evaluated, and is now partially superseded by [`../decisions/0002-frozen-backbone-generalization.md`](../decisions/0002-frozen-backbone-generalization.md).
+>
+> **§1–§2 — the family (c) framing is the substantive error, and it propagated.** §1 defines family (c) as PEFT that "exists specifically to make fine-tuning affordable when the backbone is too large to fully train," and rejects it as buying "compute savings you don't need yet." For *cross-generator generalization*, freezing is not a compute technique — it is the mechanism that prevents the backbone from overfitting to one generator's artifacts. §2's own table recorded the evidence correctly (LNCLIP-DF: "SOTA cross-dataset AUROC… strong cross-dataset generalizer if you later need it") but the categorization caused it to be discounted along with the compute argument. Full analysis: 0002 §6.2.
+>
+> **§2 — a fourth option was never enumerated.** The table collapses all frozen-backbone work into "Frozen ViT + PEFT." **Frozen features + a linear probe** — zero backbone parameters trained, nothing inserted into the network — is a distinct approach with *less* engineering than the 3-branch model that was built, so §1's objection to adapter/LoRA complexity does not apply to it. See 0002 §6.3.
+>
+> **§6 Risk 2 was correct and went unmitigated for one class.** The warning that a model may learn *which dataset* an image came from was acted on for `real`/`deepfake` (paired 1:1 from COCO_AI) but never for `edited` (CASIA, a foreign corpus). See 0002 §6.4.
+>
+> **Stale target:** Imagen 4 is deprecated and shuts down 2026-08-17. Current generators: 0002 §6.5.
+
+---
+
 ## How this was built
 
 An automated multi-agent research pass (5 search angles → 23 sources fetched → 79 candidate claims → adversarial 3-vote fact-check) ran out of budget mid-verification when the session hit its rate limit, so the final synthesis step never ran automatically. What follows is a manual synthesis over everything the pass gathered:

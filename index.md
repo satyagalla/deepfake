@@ -1,0 +1,18 @@
+- `notes.md` - guidelines and to-dos for the user
+- `docs/README.md` - index of all docs below, with the lifecycle convention (decisions / reference / research / investigations) explained
+- `docs/decisions/0001-architecture-decisions.md` - requirements and architecture decisions with reasoning, incl. the finalized dataset choice. **Status: partially superseded by 0002** (the CLIP-ViT/DINOv2 rejection and the Dataset section); superseded passages are marked inline, not rewritten
+- `docs/decisions/0002-frozen-backbone-generalization.md` - **current decision.** Full arc from lit survey -> original decision -> what the eval showed -> new facts -> decision: adopt frozen foundation-model features + a linear probe as an *additional* generalization path alongside the 3-branch model. Status: Accepted (conditional) on the gating experiment in its §9. Also records why `edited` is deferred and why the family (c) rejection in the research doc was a framing error
+- `docs/reference/data_download.md` - instructions (no code) for downloading + face-filtering the 3 class datasets; code in `data/download.py` and `data/face_filter.py`
+- `docs/reference/model_code.md` - instructions (no code) for the 3-branch fusion model, training, and eval; code in `model/*.py` + `forgery_classifier.ipynb`
+- `docs/reference/resolution_swap_probe.md` - spec for the `rgb`-direct probe (implemented as `model/resolution_swap_probe.py`); kept in `reference/` because the 2026-07-27 investigation links to it and investigations are immutable
+- `docs/research/deepfake_detection_research.md` - the 2026-07-23 SOTA survey. **Status: historical, recommendations superseded** - carries an errata header; survey content still useful, §1's recommendations replaced by 0001 (dataset) and 0002 (architecture)
+- `docs/investigations/2026-07-26-upscale-artifact.md` - investigation into severe blur seen in `docs/screenshots/demo_*.png` across all 3 classes: traces it to MTCNN's fixed bilinear crop-resize (`data/face_filter.py`/`model/demo.py`) upscaling small detected face boxes ~10-12x median across real/edited/deepfake alike, and the resulting (revised) shortcut-learning hypothesis with sources
+- `docs/investigations/2026-07-27-fft-srm-template-swap-probe.md` - first counterfactual probe (`model/counterfactual_probe.py`); rules out a targeted per-class fft/srm-template shortcut, but records its own scope gap (never varies `rgb`)
+- `docs/investigations/2026-07-27-resolution-swap-probe.md` - the `rgb`-direct follow-up (`model/resolution_swap_probe.py`); rules out a general resolution-magnitude shortcut on 2 of 3 pairs, replicated across a >30% perturbation-size swing. One small `real->edited` residual left open
+- `docs/screenshots/*.png` - live-demo screenshots (one per class) referenced by the README and the upscale investigation doc
+- `config.py` - shared config for data and model paths
+- `data/download.py`, `data/face_filter.py` - COCO_AI/CASIA download and face-filter pipeline
+- `model/branches.py`, `model/fusion.py`, `model/dataset.py`, `model/train.py`, `model/eval.py` - 3-branch fusion model, dataset, training, and eval code
+- `model/demo.py` - standalone Gradio demo (face-crop + 3-branch prediction + Grad-CAM overlay) for arbitrary uploaded images
+- `forgery_classifier.ipynb` / `forgery_classifier_final.ipynb` - Colab notebook wiring together Data/Train/Eval sections; `_final` is the executed run with outputs committed
+- `requirements.txt` - frozen environment dependencies

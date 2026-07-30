@@ -1,10 +1,20 @@
 # Architecture Decisions: 3-Class Forgery Classifier (Real / Edited / Deepfake)
 
+**Status:** Accepted, partially superseded by [`0002-frozen-backbone-generalization.md`](0002-frozen-backbone-generalization.md) (2026-07-28).
+**Date:** 2026-07-23
+
 Decisions made for the fine-tuning backbone and overall model architecture, with reasoning and discarded alternatives. Builds on `deepfake_detection_research.md`; this doc records the choices made from that research plus reasoning specific to this project's constraints.
+
+> **What 0002 changes.** The 3-branch architecture, fusion gate, and compute decisions below all still stand — the model was built to this spec and holds macro-F1 0.9079 in-distribution. Two parts are superseded:
+>
+> 1. **Branch 1's rejection of CLIP-ViT / DINOv2.** Both were held in reserve pending a measured cross-generator gap. That gap is now measured, so the reserved branch is being taken up — as *frozen features + a linear probe*, not the fine-tuned ViT this section argued against. See 0002 §6.2–6.3, §7.2.
+> 2. **The Dataset section.** Single-generator training (DALL-E 3 only) is now the identified cause of the cross-generator failure, and the `edited` class is deferred because CASIA cannot be provenance-matched to the other two. See 0002 §6.4, §8.3, §8.5.
+>
+> Superseded passages are marked inline below. Nothing here is rewritten — this doc is the record of what was decided on 2026-07-23 and why.
 
 ## Requirements driving these decisions
 
-1. **Testing ground:** evaluation will be on AI-generated images from latest-generation models (ChatGPT/gpt-image-1, Gemini/Imagen, and similar — diffusion/autoregressive-decoder based, full-image generators). This is a different artifact family from GAN-based face-swap datasets (FaceForensics++, Celeb-DF, DFDC) that dominate the published research — those leave checkerboard/upsampling artifacts specific to transposed convolutions; diffusion output does not share that specific tell but does deviate from natural camera-sensor statistics in its own way. Backbone/signal choices favor generalizable artifact types over GAN-specific ones.
+1. **Testing ground:** `[partly stale — Imagen 4 shuts down 2026-08-17; current targets are GPT Image 2, Nano Banana Pro, FLUX.2, Midjourney V8.1. See 0002 §6.5.]` evaluation will be on AI-generated images from latest-generation models (ChatGPT/gpt-image-1, Gemini/Imagen, and similar — diffusion/autoregressive-decoder based, full-image generators). This is a different artifact family from GAN-based face-swap datasets (FaceForensics++, Celeb-DF, DFDC) that dominate the published research — those leave checkerboard/upsampling artifacts specific to transposed convolutions; diffusion output does not share that specific tell but does deviate from natural camera-sensor statistics in its own way. Backbone/signal choices favor generalizable artifact types over GAN-specific ones.
 2. **Explainability:** the model must not just output a class — it needs to surface *why* (e.g., spatial artifacts vs. spectral artifacts vs. noise-residual artifacts), not act as an opaque single-logit classifier.
 3. **Hard constraints:** 1.5 hours total training time, Google Colab Pro (300 compute units), GPU assignment not guaranteed — could draw T4, L4, or A100. Final build accessed an **A100 40GB**.
 
@@ -55,8 +65,10 @@ Every class leaves *some* trace here, making this the generalist branch — henc
 **Why EfficientNet-B4, and what was discarded:**
 - **Xception** — same reasoning category (spatial texture). Picked EfficientNet-B4 first because research showed similar-or-better accuracy with fewer parameters than Xception (EfficientNet-B4: ~19M params, 82.6–83% top-1 on ImageNet vs. Xception: ~22.9M params, 79.0% top-1 — Tan & Le 2019). Further research showed fewer parameters doesn't mean less compute or faster training — a controlled benchmark (DeepfakeBench, NeurIPS 2023) found Xception and EfficientNet-B4 perform about the same on forgery detection, with neither beating the other. EfficientNet-B4 stays the pick to avoid running two backbones on the same evidence type, but on parameter-efficiency grounds only, not a proven accuracy or speed edge for this task.
 - **ResNet-50** — less parameter-efficient than EfficientNet at comparable accuracy; no distinct feature type over EfficientNet. Cut earlier in the process as "not worth a branch."
-- **CLIP-ViT (frozen or LayerNorm-tuned)** — strong at global semantic plausibility and cross-dataset generalization (research doc's LNCLIP-DF result, §2), but weaker at the localized pixel-level texture forensics Grad-CAM cleanly visualizes, and heavier compute than needed right now. Held in reserve as a v2 branch if cross-generator generalization proves to be the bottleneck once real eval numbers exist.
+- **CLIP-ViT (frozen or LayerNorm-tuned)** — strong at global semantic plausibility and cross-dataset generalization (research doc's LNCLIP-DF result, §2), but weaker at the localized pixel-level texture forensics Grad-CAM cleanly visualizes, and heavier compute than needed right now. Held in reserve as a v2 branch if cross-generator generalization proves to be the bottleneck once real eval numbers exist. **`[SUPERSEDED by 0002]` — the condition stated here fired. Eval numbers exist, the gap is measured, and no shortcut explanation survived three investigations. The reserve is being taken up; LNCLIP-DF is 0002's primary candidate (§8.1).**
 - **DINOv2 (self-supervised ViT)** — genuinely strong general-purpose features, and its patch tokens retain more local/textural detail than CLIP's globally-pooled semantic embedding (no text-alignment bias pulling it toward global semantics), making it arguably a *better* forensics fit than CLIP in theory. Still discarded for v1 because: (a) attention cost scales O(n^2) with token count, and DINOv2's strong results depend on evaluating near its 336-518px training resolution, which is markedly more expensive per image than a CNN of similar parameter count; (b) full fine-tuning a ViT on a small, time-boxed dataset is a worse bet than fine-tuning a CNN — CNNs carry built-in locality/translation-equivariance inductive bias that ViTs must learn from data, and one shot inside 1.5 hours is a bad setting for that; (c) same explainability mismatch as CLIP — Grad-CAM's spatial-feature-map assumption doesn't transfer cleanly to a ViT, requiring attention-rollout or similar, which is less mature and doesn't reduce as cleanly to the gate's "named artifact, X% contribution" output; (d) it would occupy the same conceptual slot as the existing spatial branch rather than add a new evidence type. **Reserved as the v2 generalization branch (superseding CLIP in that role) if a real generalization gap shows up in evaluation.**
+
+  **`[SUPERSEDED by 0002]`** — the gap showed up. Note that objections (a) and (b) argued against *fine-tuning* a ViT at high resolution; 0002 proposes freezing it entirely and fitting a linear probe on precomputed embeddings, which those objections don't reach (0002 §7.2). Objection (c), the Grad-CAM mismatch, still holds and is the accepted cost of keeping this as an *additional* path rather than a replacement (0002 §8.2, §10).
 
 ---
 
@@ -137,6 +149,10 @@ Compute units are not the binding constraint at any tier (a 1.5-hour A100 sessio
 ---
 
 ## Dataset assembly (finalized, supersedes the FF++/Celeb-DF plan in the research doc §4)
+
+> **`[SUPERSEDED by 0002 §6.4, §8.3, §8.5]`** — this section's real/deepfake pairing was the right call and is retained. Two things it got wrong or left open:
+> - The pairing protects `real` vs. `deepfake` only. **`edited` was never covered by it** — CASIA is a foreign corpus, and nothing in the pipeline removes its compression/sensor/resolution fingerprint. `edited` is now deferred (0002 §8.3) because no dataset supplies all three classes from a common distribution.
+> - The single-generator tradeoff below was accepted with a mitigation ("hold out SynthBuster's other slices as eval-only") that **was never run**. It is now the identified cause of the cross-generator failure, and 0002 §8.5 executes the held-out measurement properly.
 
 One dataset per class, chosen for a tight prep window and for matching the actual test target (diffusion output, not GAN face-swap):
 
