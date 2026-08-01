@@ -1,7 +1,9 @@
 # 0002 — Frozen Foundation-Model Features as the Generalization Path
 
-**Status:** Accepted (conditional — see §9, the gating experiment)
+**Status:** Partially superseded by [`0003-frozen-probe-demo-build.md`](0003-frozen-probe-demo-build.md) (2026-08-01) — §9 and the conditional status
 **Date:** 2026-07-28
+
+> **Amended 2026-08-01.** The "Accepted (conditional)" status above is **resolved by deadline, not by evidence.** `0003` executes §8's direction as a build but does **not** run §9's gating experiment, because the v1-side comparison it requires was placed out of scope the same day. The falsification mechanism §9 was written to provide is therefore spent rather than passed — see `0003` §3. §11's open items are likewise out of scope, not disproven. §8.1's candidate order is narrowed by `0003` §4.3, and §8.2's face-cropped pipeline does not carry into that build (`0003` §4.1).
 **Supersedes:** nothing outright. Partially supersedes [`0001-architecture-decisions.md`](0001-architecture-decisions.md) §Branch 1 (the CLIP-ViT / DINOv2 rejection) and its Dataset section.
 **Relates to:** [`../research/deepfake_detection_research.md`](../research/deepfake_detection_research.md) §1–2, and the three investigations dated 2026-07-26 / 2026-07-27.
 
@@ -132,9 +134,11 @@ This is the root cause of a problem `0001` half-solved. `0001` paired `real` and
 
 Nothing in the pipeline closes that gap. The MTCNN crop normalizes framing and output resolution, and the q95 re-save normalizes the *final* compression step, but compression history, sensor statistics, and resolution provenance all survive. And `model/dataset.py` applies **zero augmentation** — no JPEG jitter, no noise, no blur, not a flip — so nothing forces invariance to any of it.
 
-The results are consistent with the fingerprint having been learned: errors concentrate where provenance is *shared* (real↔deepfake, both COCO_AI: 46 errors) and nearly vanish where it differs (edited↔deepfake: 1 error), and `edited` posts the **highest ROC-AUC of any class (0.990)** despite being the smallest after face-filtering. This is not proof — a genuinely distinctive manipulation signature would look similar — but the README previously read "edited→deepfake confusions: 0" as unambiguous architectural success, and it is not.
+The original evidence for this was circumstantial: errors concentrate where provenance is *shared* (real↔deepfake, both COCO_AI: 46 errors) and nearly vanish where it differs (edited↔deepfake: 1 error), and `edited` posts the **highest ROC-AUC of any class (0.990)** despite being the smallest after face-filtering. The README previously read "edited→deepfake confusions: 0" as unambiguous architectural success, and it is not — but on its own this pattern is also consistent with a genuinely distinctive manipulation signature, not just a fingerprint.
 
-This is also why `edited` is deferred rather than solved (see §8.3): the class cannot be sourced from the same distribution as the other two, because no such dataset exists.
+**This has since been measured directly** (`2026-07-29-casia-authentic-probe.md`): CASIA's own untouched `Au_` (authentic) images — never downloaded into the manifest, same corpus/compression/sensor identity as `edited`'s CASIA half, zero manipulation — get classified `edited` **17.4% of the time** (n=161), vs. 2.7% for true COCO_AI `real` images on the same checkpoint. That ~6.4x gap confirms the fingerprint is real and non-trivial. It is a **partial**, not primary, explanation, though: 78.3% of these authentic images are still correctly called `real`, far more than a mostly-fingerprint account of `edited`'s 89.5% recall would predict.
+
+This is also why `edited` is deferred rather than solved (see §8.3): the class cannot be sourced from the same distribution as the other two, because no such dataset exists, and it now carries a measured (if partial) fingerprint confound.
 
 ### 6.5 The generator landscape moved `[confirmed]`
 
@@ -147,6 +151,19 @@ As of July 2026: **GPT Image 2** (OpenAI), **Nano Banana Pro** (Google/Gemini), 
 Most open generators (FLUX, SD, Qwen-Image) are latent diffusion: a VAE decoder upsamples from latent space, leaving periodic high-frequency traces. GPT Image is autoregressive/token-based — a different synthesis path with a different artifact profile. DALL-E 3, our only training generator, sits on the diffusion side.
 
 This offers a sharper diagnosis than "unseen generator": our FFT and SRM branches learned diffusion-VAE upsampling traces, and gpt-image-1 output does not carry them. Tagged `[unverified]` — it is a mechanistic hypothesis consistent with 5.2, not something we have measured.
+
+> **Amended 2026-07-31** — see [`../research/2026-07-31-claim-verification.md`](../research/2026-07-31-claim-verification.md). The section above is **half right and half wrong**, and the wrong half was load-bearing.
+>
+> **Upheld and upgraded to `[confirmed]`:** detectors do key on the global VAE **decode** rather than on synthesized content. Three independent lines: AlignedForensics (ICLR 2025) trains on real vs. autoencoder reconstructions *with no denoising* and transfers to real generated images; AEROBLADE reaches 0.992 mAP training-free from reconstruction error alone; and INP-X collapses pretrained detectors from ~91-94% to ~55% by restoring pixels outside an inpainted region — keeping generated content, removing the global decode.
+>
+> **Corrected:** the implication that a shared "diffusion family" implies shared artifacts, and therefore transfer. It does not.
+> - VAE configurations **diverge** across models and are not interchangeable (SD/SDXL 4ch — mutually incompatible; SD3/FLUX.1 16ch; FLUX.2 32ch). The trend is divergence, not convergence.
+> - **Flux Dev is latent diffusion and sits at 21% detection accuracy** in an independent 16-detector benchmark — among the hardest targets measured. Family membership does not predict transfer.
+> - Corvi et al. (ICASSP 2023) found strong spectral peaks for SD/LDM but **weak** artifacts for ADM and DALL·E 2 — the artifact is not uniform even within latent diffusion.
+>
+> **Revised mechanism, replacing the family story:** detectors read the global decode, but sharing "a VAE" buys nothing, because configurations diverge and artifact strength shrinks each generation. **Recency is an axis independent of family.**
+>
+> **Also reclassified:** the gpt-image-1 autoregressive claim moves from `[unverified]` to `[reported by vendor, not independently confirmed]`. OpenAI describes next-visual-token prediction inside a natively multimodal transformer, but there is no architecture paper and no independent replication. The *token-grid artifact profile* asserted above remains unestablished. Note also that GPT Image 2 and Nano Banana Pro are **products, not raw models** — what we see is decoder output plus an undisclosed post-pipeline.
 
 ## 7. What these facts change
 
@@ -197,6 +214,14 @@ Currently zero (`model/dataset.py`). Adopt the standard protocol: Gaussian blur 
 
 Train on ≥2 generators (FLUX.2-dev and SDXL are open-weight and runnable on the existing A100 at no marginal cost). Hold out **GPT Image 2, Nano Banana Pro, and Midjourney V8.1** as eval-only, never trained on. This finally executes the measurement `0001` pre-registered and never ran. Not Imagen 4 — see §6.5.
 
+> **Amended 2026-07-31** — see [`../research/2026-07-31-claim-verification.md`](../research/2026-07-31-claim-verification.md) §4.1.
+>
+> Do **not** design the held-out split by grouping generators into architecture families and taking one representative each. Family is not the right unit (§6.6 amendment): Flux Dev is latent diffusion and is among the hardest generators measured, at 21%. A FLUX / SD3 / SDXL holdout is *not* redundant, and FLUX must not be dropped from an eval set on the grounds that it shares a family with the training data.
+>
+> Two additions to the protocol:
+> - **Report a robustness surface, not a point.** TPR at fixed low FPR across a JPEG-quality × downscale grid. Augmentation with common post-processing improves generalization even when test images are not post-processed (Wang et al. 2020, 92.6% AP) — this reinforces §8.4 independently.
+> - **Budget generator count with the diminishing-returns curve in mind.** Community Forensics improves monotonically with generator count but flattens beyond ~1,000 models. The curve is steep early, so the first few additional generators carry most of our achievable marginal return — which is the argument for ≥2 being a floor, not a target.
+
 ## 9. The gating experiment — how this gets falsified
 
 §8 is **Accepted (conditional)**. The condition is a single experiment, runnable against data already on disk, with no new sourcing:
@@ -219,14 +244,37 @@ Fixing 5.2 into a reproducible, versioned OOD image set is a prerequisite and pa
 - **Freezing does not confer corruption robustness.** It addresses generator transfer only; §8.4 is a separate, independent requirement.
 - **Freezing mitigates but does not eliminate corpus fingerprint.** A probe can still find a corpus-separating hyperplane if one exists in the frozen space. Relevant when `edited` returns (§8.3).
 - **The strongest supporting result is `[unverified]`.** Mitigated by §9 replacing deference with measurement, and by treating LNCLIP-DF (`[confirmed]`) as the primary candidate.
+- **A frozen public backbone makes the feature space public — an adversarial liability.** `[confirmed]`, added 2026-07-31. Knowledge of the frozen ViT backbone architecture *alone* is sufficient to craft gray-box adversarial examples reaching near-white-box attack success rates, even under complete training misalignment ([Backbone is All You Need](https://arxiv.org/abs/2605.13381)). This is a property of the frozen-backbone design, not of contamination, and it does not affect §9 — but it is a real cost of this path and should be stated rather than discovered later. Accepted: the generalization benefit is the reason for the path, and no adversary is in scope for the current evaluation.
+- **Confidence is not a usable abstention signal on this failure mode.** `[confirmed]`, added 2026-07-31. Failure on unseen generators is *confident* and biased toward `real` (§5.2 is an instance of a documented general property — see the verification doc §1.2). The model is not uncertain, it is wrong and sure, so calibration cannot recover it. Any abstention mechanism must key on **distance to the training distribution** (kNN / Mahalanobis on frozen features), not on output probability.
+
+  **Amended 2026-08-01** — the two conclusions above are **withdrawn**; the premise is retained. See [`../research/2026-08-01-calibration-and-thresholds.md`](../research/2026-08-01-calibration-and-thresholds.md). This is the project's first overturned `[confirmed]` tag.
+  - *"Calibration cannot recover it"* — **contradicted.** [Yang et al., AAAI 2026](https://arxiv.org/abs/2602.01973) attributes the cross-generator failure to **misaligned decision thresholds rather than a loss of feature separability**, and corrects it with a learnable scalar logit adjustment fitted on a small target-distribution set, backbone frozen, with a label-free variant. A confidently-wrong model can still rank correctly: a monotone rescaling moves the boundary without changing the ordering. The 07-31 reasoning did not separate *boundary placement* from *separability*.
+  - *"Abstention must key on distance, not confidence"* — **unsupported.** [Jaeger et al., ICLR 2023](https://arxiv.org/abs/2211.15259) `[unverified — second-hand]` reports that no evaluated confidence-scoring method beats a Maximum Softmax Response baseline across a realistic range of failure sources, with Mahalanobis winning only on far-OOD. Revised position: **measure both distance and confidence on our own data**; do not assume distance wins.
+  - **New prerequisite, not previously recorded.** [Alexandari et al., ICML 2020](https://proceedings.mlr.press/v119/alexandari20a.html) establishes that prior/base-rate correction *assumes a calibrated `p(y|x)`*. Calibration is a precondition for the base-rate work in [`../research/2026-07-31-production-deployment.md`](../research/2026-07-31-production-deployment.md), not an alternative to it. **Our checkpoint's calibration has never been measured** — see §11.
+  - **Boundary of the fix.** Prior-shift methods assume label shift (`p(y)` changes, `p(x|y)` fixed). An unseen generator changes `p(x|fake)`, so they are outside their proven assumptions here. Any correction applied is empirically motivated, not theoretically licensed, and should be reported as such.
 
 ## 11. Open items
 
 - Run §9. Nothing downstream should be built before it reports.
 - Build the reproducible OOD eval set (§5.2 is currently unquantified).
-- Fold `edited` back in once a provenance-matched source exists, or measure the fingerprint via a held-out second edited corpus (§6.4, §8.3).
+- Fold `edited` back in once a provenance-matched source exists. The fingerprint itself is now partially measured (§6.4, `2026-07-29-casia-authentic-probe.md`: 17.4% false-`edited` rate on authentic CASIA images, n=161) — PS-Battles' "original" half is still unmeasured, and a tighter n on the CASIA side would help before this closes out.
 - The `real→edited` residual from `2026-07-27-resolution-swap-probe.md` remains open and unpursued — small, isolated, low priority.
 - Per-branch auxiliary classifier heads (noted in `notes.md`, README future work) — still wanted, still requires retraining, sequenced after §9.
+
+Added 2026-07-31, from [`../research/2026-07-31-claim-verification.md`](../research/2026-07-31-claim-verification.md) §5:
+
+- **Test the decode-artifact mechanism against our own checkpoint.** §1.1 of the verification doc establishes that detectors key on the global VAE decode *for the field*; it does not establish it for our FFT/SRM branches. Testable on data we already hold, and it would convert §6.6 from hypothesis to measurement.
+- ~~**Decompose the 18-30% commercial-generator figures.**~~ **Answered 2026-08-01 — substantially misplaced thresholds.** Those are accuracies at each method's own threshold on balanced sets; the benchmark does not separate lost separability from misplaced thresholds. Whether the signal is gone or merely mis-thresholded materially changes how pessimistic the outlook should be — and it is the difference between "retrain" and "recalibrate." [Yang et al., AAAI 2026](https://arxiv.org/abs/2602.01973) resolves this in favour of **recalibrate**: the failure is attributed to misaligned decision thresholds rather than lost feature separability, recoverable post-hoc with the backbone frozen. The outlook is correspondingly less pessimistic than §6.5 assumed. See [`../research/2026-08-01-calibration-and-thresholds.md`](../research/2026-08-01-calibration-and-thresholds.md) §2.
+
+Added 2026-08-01, from [`../research/2026-08-01-calibration-and-thresholds.md`](../research/2026-08-01-calibration-and-thresholds.md) §5:
+
+- **Measure this checkpoint's in-distribution calibration.** Never done. A reliability diagram + ECE on the existing val set needs no new data, no API cost, and no retraining — and it is the precondition Alexandari establishes for any base-rate or threshold correction (§10). Cheapest open item on this list.
+- **Verify the calibration-set size in Yang et al.** The abstract says only "a small validation set"; the ~100-image figure the current plan assumes is second-hand. The OOD eval set (§11, above) is specced to serve as both the failure measurement *and* the calibration set — if the real requirement is materially larger, that plan needs revisiting.
+- **Adapt the scalar logit correction to 3 classes.** Yang et al. is binary. Temperature scaling extends natively; the per-class correction does not, and how it is adapted is a design decision.
+- **Test whether ranking survives on our OOD set.** The local replication of the §2 mechanism. If AUC collapses rather than the threshold merely shifting, the correction does not apply here — this is the discriminating test.
+- **`edited` may be the wrong shape of problem, not just the wrong dataset.** §8.3 deferred it on sourcing grounds. INP-X now adds a mechanistic reason: detectors trained on global synthesis fall to ~55% on localized manipulation, with ~75% the ceiling even when trained directly for it. If `edited` returns, it likely returns as a **localization** task (per-pixel mask + pooled image score), not as a third head on a global classifier.
+- **The one-class / camera-anchor direction needs its own pass before it is relied on.** PRNU is losing per-device uniqueness to computational photography, and neural ISPs hallucinate content. No positive definition of the `real` class that survives this was located.
+- **Resolve the FLUX.2 autoencoder compression-ratio conflict** (verification doc §2.1) if FLUX.2 becomes a training or eval target.
 
 ## Sources
 
@@ -246,3 +294,15 @@ New to this decision:
 - [Detection of Synthetic Face Images: Accuracy, Robustness, Generalization](https://arxiv.org/html/2406.17547) — augmentation protocol in §8.4
 - Geirhos et al., [Shortcut Learning in Deep Neural Networks](https://www.nature.com/articles/s42256-020-00257-z), Nat. Mach. Intell. 2 (2020) — mechanism in §7.1
 - [Best AI Image Generators July 2026](https://www.buildmvpfast.com/articles/best-llms-2026-guide/image-generation-ai) — generator landscape, §6.5
+
+Added by the 2026-07-31 verification pass — full bibliography and per-claim status in [`../research/2026-07-31-claim-verification.md`](../research/2026-07-31-claim-verification.md):
+
+- [Aligned Datasets Improve Detection of Latent Diffusion-Generated Images (ICLR 2025)](https://arxiv.org/abs/2410.11835) — decode-artifact mechanism, §6.6 amendment
+- [AEROBLADE (CVPR 2024)](https://openaccess.thecvf.com/content/CVPR2024/papers/Ricker_AEROBLADE_Training-Free_Detection_of_Latent_Diffusion_Images_Using_Autoencoder_Reconstruction_CVPR_2024_paper.pdf) — same
+- [Inpainting Exchange / INP-X](https://arxiv.org/html/2602.00192) — same, and the `edited`-as-localization item in §11
+- [Community Forensics (CVPR 2025)](https://arxiv.org/abs/2411.04125) — generator-count lever, §8.5 amendment
+- [Open-sourced detector benchmark](https://arxiv.org/html/2602.07814v1) — the 18-30% commercial-generator figures, §6.6 and §8.5 amendments
+- [Breaking Latent Prior Bias](https://arxiv.org/pdf/2506.00874) / [GenDet](https://arxiv.org/html/2312.08880) — confident-failure-toward-`real`, §10
+- [Backbone is All You Need](https://arxiv.org/abs/2605.13381) — adversarial risk of a public frozen backbone, §10
+- [notes_on_sd_vae](https://gist.github.com/madebyollin/ff6aeadf27b2edbc51d05d5f97a595d9) — VAE divergence across model families, §6.6 amendment
+- [CNN-generated images are surprisingly easy to spot… for now (CVPR 2020)](https://openaccess.thecvf.com/content_CVPR_2020/papers/Wang_CNN-Generated_Images_Are_Surprisingly_Easy_to_Spot..._for_Now_CVPR_2020_paper.pdf) — independent support for §8.4
