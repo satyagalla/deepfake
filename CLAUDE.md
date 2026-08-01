@@ -26,9 +26,9 @@ Never for: sequential steps, code review of your own recent edits, single-file t
 
 **Done:**
 
-- Done with debugging and understanding current model. 
+- Done with literature survey on various aspects - production, calibration, research models
 
 **Next:**
 
-- Moving on to choosing a new model and re-training it. Studying different arch's and implementations
+- Make a plan from the overall findings
 
