@@ -10,3 +10,6 @@ facenet-pytorch
 datasets
 kaggle
 gradio
+open_clip_torch
+google-genai
+openai
