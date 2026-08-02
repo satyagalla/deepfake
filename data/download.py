@@ -1,13 +1,19 @@
-"""Download raw sources for the real / edited / deepfake pipeline.
+"""Download raw sources.
 
 Sources:
-- deepfake + real: NasrinImp/COCO_AI on Hugging Face (coco_image = pristine
-  original, dalle_image = DALL-E 3 generation), paired 1:1 by row.
+- COCO_AI (real + 6 generators): NasrinImp/COCO_AI on Hugging Face. Real
+  schema is `caption, coco_image, sd21_image, sdxl_image, sd3_image,
+  sd35_image, dalle_image, midjourney_image` -- one real column and six
+  generator columns, paired 1:1 by row. `0004` §5 corrects `0003`, which
+  read only 2 of these 7 columns (`coco_image`, `dalle_image`); all 7 are
+  now taken, and the person-caption filter that existed to serve the v1
+  face crop (removed in `0003` §4.1) is dropped, since v2 (`0004`) has no
+  face crop to feed.
 - edited: CASIA v2.0 tampered images, via Kaggle
   (divg07/casia-20-image-tampering-detection-dataset), plus PS-Battles
   derivative (Photoshopped) images, via Kaggle (timocasti/psbattles) for
   manipulation-technique diversity. Each dataset's own authentic/original
-  set is ignored -- real comes solely from COCO_AI.
+  set is ignored -- real comes solely from COCO_AI. (v1 pipeline only.)
 
 Auth:
 - Kaggle: set KAGGLE_API_TOKEN (new single-token auth) or the classic
@@ -15,13 +21,11 @@ Auth:
 - Hugging Face: HF_TOKEN env var, only needed if you hit rate limits on an
   anonymous pull (COCO_AI is a public dataset).
 
-All three downloads are independent, I/O-bound network pulls -- main() runs
-them concurrently (ThreadPoolExecutor) rather than one after another, so
-total download wall-clock is roughly the slowest of the three instead of
-the sum.
+All downloads are independent, I/O-bound network pulls -- main() runs them
+concurrently (ThreadPoolExecutor) rather than one after another, so total
+download wall-clock is roughly the slowest of the three instead of the sum.
 """
 import argparse
-import re
 import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,73 +35,68 @@ from tqdm.auto import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import (
+    COCO_AI_COLUMNS,
+    COCO_AI_RAW_DIR,
     DEEPFAKE_SRC,
     EDITED_SRC,
     EDITED_SRC_PSBATTLES,
     HF_DATASET,
+    JPEG_QUALITY,
     KAGGLE_DATASET,
     PS_BATTLES_DATASET,
     REAL_SRC,
     SEED,
 )
 
-# COCO_AI pairs are sampled from all of COCO, most of which has no person/face
-# in frame at all -- that (not the detector) is why face-filtering's survival
-# rate was ~15-20% across every class. Pre-filter on the caption's wording so
-# the pool MTCNN runs on is mostly person-containing to begin with.
-PERSON_KEYWORDS = {
-    "man", "men", "woman", "women", "person", "people", "boy", "boys", "girl", "girls",
-    "child", "children", "kid", "kids", "baby", "babies", "guy", "guys", "lady", "ladies",
-    "face", "faces", "toddler", "toddlers", "adult", "adults", "player", "players",
-}
-
-
-def caption_has_person(caption: str) -> bool:
-    words = re.findall(r"[a-z']+", caption.lower())
-    return any(w in PERSON_KEYWORDS for w in words)
-
 
 def download_coco_ai(n_pairs: int, seed: int = SEED) -> None:
+    """Writes complete 7-way rows (real + all 6 generators) to
+    coco_ai/<column_key>/<row_id>.jpg -- row_id is shared across all 7
+    subdirs so it doubles as the pairing/split join key (I2/I3). A row
+    with any of the 7 columns null is skipped entirely rather than
+    partially written, since a partial row would silently break the 1:1
+    pairing invariant `bottlenecks.md` §7 calls the corpus's most valuable
+    property."""
     from datasets import load_dataset
 
-    REAL_SRC.mkdir(parents=True, exist_ok=True)
-    DEEPFAKE_SRC.mkdir(parents=True, exist_ok=True)
+    for key in COCO_AI_COLUMNS:
+        (COCO_AI_RAW_DIR / key).mkdir(parents=True, exist_ok=True)
 
-    print(f"Streaming {HF_DATASET} (train split), collecting {n_pairs} person-caption pairs...")
+    print(f"Streaming {HF_DATASET} (train split), collecting {n_pairs} complete 7-column rows...")
     ds = load_dataset(HF_DATASET, split="train", streaming=True)
-    ds = ds.select_columns(["caption", "coco_image", "dalle_image"])
+    ds = ds.select_columns(list(COCO_AI_COLUMNS.values()))
     ds = ds.shuffle(seed=seed, buffer_size=10_000)  # whole dataset is ~10k rows
 
-    written = seen = 0
-    with tqdm(total=n_pairs, desc="COCO_AI person pairs", unit="pair") as pbar:
+    written = seen = skipped_incomplete = 0
+    with tqdm(total=n_pairs, desc="COCO_AI rows", unit="row") as pbar:
         for row in ds:
             seen += 1
-            if not caption_has_person(row.get("caption") or ""):
-                continue
-            real_img, fake_img = row["coco_image"], row["dalle_image"]
-            if real_img is None or fake_img is None:
+            imgs = {key: row.get(col) for key, col in COCO_AI_COLUMNS.items()}
+            if any(img is None for img in imgs.values()):
+                skipped_incomplete += 1
                 continue
             name = f"{written:05d}.jpg"
-            real_img.convert("RGB").save(REAL_SRC / name, quality=95)
-            fake_img.convert("RGB").save(DEEPFAKE_SRC / name, quality=95)
+            for key, img in imgs.items():
+                img.convert("RGB").save(COCO_AI_RAW_DIR / key / name, quality=JPEG_QUALITY)
             written += 1
             pbar.update(1)
             if written >= n_pairs:
                 break
 
     print(
-        f"COCO_AI: scanned {seen} rows, wrote {written} person-caption real/deepfake "
-        f"pairs to {REAL_SRC} and {DEEPFAKE_SRC}"
+        f"COCO_AI: scanned {seen} rows ({skipped_incomplete} incomplete, missing >=1 of "
+        f"{len(COCO_AI_COLUMNS)} columns), wrote {written} complete rows to {COCO_AI_RAW_DIR}"
     )
     if written == 0:
         raise RuntimeError(
-            "No COCO_AI pairs written -- the dataset schema (coco_image/dalle_image/caption "
-            "columns) may have changed upstream; check https://huggingface.co/datasets/NasrinImp/COCO_AI"
+            "No complete COCO_AI rows written -- the dataset schema "
+            f"({list(COCO_AI_COLUMNS.values())}) may have changed upstream; check "
+            "https://huggingface.co/datasets/NasrinImp/COCO_AI"
         )
     if written < n_pairs:
         print(
-            f"WARNING: only {written}/{n_pairs} requested pairs found (dataset exhausted). "
-            "Proceeding with what was collected -- check the deepfake survival floor in face_filter.py."
+            f"WARNING: only {written}/{n_pairs} requested rows found (dataset exhausted or "
+            "many incomplete rows). Proceeding with what was collected."
         )
 
 
@@ -175,22 +174,22 @@ def download_all(
 def _test_coco_ai(n_sample: int = 200) -> None:
     from datasets import load_dataset
 
-    print(f"[COCO_AI] streaming {n_sample} rows to check schema + person-caption hit rate (no files written)...")
+    print(f"[COCO_AI] streaming {n_sample} rows to check schema + complete-row hit rate (no files written)...")
     ds = load_dataset(HF_DATASET, split="train", streaming=True)
-    ds = ds.select_columns(["caption", "coco_image", "dalle_image"])
+    ds = ds.select_columns(list(COCO_AI_COLUMNS.values()))
     seen = hits = 0
     for row in ds:
         seen += 1
-        if caption_has_person(row.get("caption") or "") and row.get("coco_image") is not None and row.get("dalle_image") is not None:
+        if all(row.get(col) is not None for col in COCO_AI_COLUMNS.values()):
             hits += 1
         if seen >= n_sample:
             break
     pct = 100 * hits / max(seen, 1)
-    print(f"[COCO_AI] schema OK -- {hits}/{seen} sampled rows are usable person-caption pairs (~{pct:.0f}% hit rate)")
+    print(f"[COCO_AI] schema OK -- {hits}/{seen} sampled rows have all {len(COCO_AI_COLUMNS)} columns (~{pct:.0f}% hit rate)")
     if hits == 0:
         raise RuntimeError(
-            "[COCO_AI] 0 usable pairs in sample -- coco_image/dalle_image/caption schema may have "
-            "changed upstream, or PERSON_KEYWORDS needs revisiting."
+            f"[COCO_AI] 0 complete rows in sample -- schema ({list(COCO_AI_COLUMNS.values())}) may have "
+            "changed upstream; check https://huggingface.co/datasets/NasrinImp/COCO_AI"
         )
 
 
@@ -245,11 +244,18 @@ def _test_kaggle_source(dataset_slug: str, label: str, classify, require_label: 
         )
 
 
-def test_sources(n_coco_sample: int = 200, skip_ps_battles: bool = True) -> None:
+def test_sources(n_coco_sample: int = 200, skip_casia: bool = False, skip_ps_battles: bool = True) -> None:
     """Cheap, no-full-download validation of every source -- run this once
     (`python data/download.py --test`) before committing to the full
     download. Catches a broken Kaggle token or a changed HF schema in
     seconds instead of after paying for gigabytes of transfer.
+
+    skip_casia defaults to False for the CLI (`--test` validates every
+    source `download_all` would touch), but the probe/ pipeline (0004/0005)
+    only ever reads COCO_AI + selfgen -- CASIA is the older face-filtered
+    v1 pipeline's edited-image source and needs Kaggle credentials this
+    notebook doesn't set up, so callers that only care about probe/ should
+    pass skip_casia=True.
 
     skip_ps_battles defaults to True: the timocasti/psbattles Kaggle slug
     turned out to ship only a downloader script + TSVs, not actual images
@@ -263,13 +269,14 @@ def test_sources(n_coco_sample: int = 200, skip_ps_battles: bool = True) -> None
 
     tasks = {
         "COCO_AI": lambda: _test_coco_ai(n_coco_sample),
-        "CASIA": lambda: _test_kaggle_source(
+    }
+    if not skip_casia:
+        tasks["CASIA"] = lambda: _test_kaggle_source(
             KAGGLE_DATASET,
             "CASIA",
             lambda p: "tampered" if p.name.lower().startswith("tp_") else "other",
             require_label="tampered",
-        ),
-    }
+        )
     if not skip_ps_battles:
         tasks["PS-Battles"] = lambda: _test_kaggle_source(
             PS_BATTLES_DATASET, "PS-Battles", classify_ps_battles_path, require_label="derivative"
@@ -297,7 +304,7 @@ def test_sources(n_coco_sample: int = 200, skip_ps_battles: bool = True) -> None
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--n-pairs", type=int, default=3000, help="person-caption real/deepfake pairs to collect from COCO_AI"
+        "--n-pairs", type=int, default=3000, help="complete 7-column COCO_AI rows to collect (real + 6 generators)"
     )
     parser.add_argument("--skip-coco-ai", action="store_true")
     parser.add_argument("--skip-casia", action="store_true")
@@ -322,7 +329,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.test:
-        test_sources(skip_ps_battles=not args.include_ps_battles)
+        test_sources(skip_casia=args.skip_casia, skip_ps_battles=not args.include_ps_battles)
         return
 
     download_all(
