@@ -32,9 +32,13 @@ Never for: sequential steps, code review of your own recent edits, single-file t
 - Bottleneck inventory: `docs/notes/2026-08-02-bottlenecks.md`
 - **`0004` written and accepted** — `docs/decisions/0004-adaptation-hypothesis-demo-build.md`. The claim is now **"adaptation costs N images"**, not "it generalizes". Supersedes `0003` §4.3, §5, most of §6
 - Evidence for it: `docs/research/2026-08-02-patch-inference-and-encoder-choice.md`
-- Execution plan: `docs/notes/2026-08-02-build-plan.md` - **start here**
+- **`0005` written and accepted** — `docs/decisions/0005-measurement-and-verdict-semantics.md`. What the build may report and claim: **no post-hoc calibration** (Platt removed), prevalence-invariant metrics (AUC/TPR/FPR, precision derived at a named π), and a verdict vocabulary derived from this model's observables (`verdict` + `reliability`) rather than inherited from Plurall's spec. Supersedes `0004` §6.6, §7.1, §8's vocabulary, §9 E1/E5 criteria
+- Execution plan: `docs/notes/2026-08-02-build-plan.md` - **start here**. §1's invariants and §4's rework list carry `0005`
 
 **Next:**
+
+- **`probe/` is mid-rework and does not import.** Six files done (`config.py`, `heads.py`, `thresholds.py`, `spectral.py`, `cards.py`, `experiments.py`); three broken (`fit_production.py` NameError, `degradation.py` ImportError, `demo.py` AttributeError). Exact remaining diff: `docs/notes/2026-08-02-0005-rework-spec.md` §2. Nothing committed, so finish forward — do not revert
+- **E1's eval set is broken as written** (`0005` §5): ~450 real vs tens of AI, so "always real" scores ≥90% and a flat curve would falsify the claim by artifact. The code side is fixed (metrics are prevalence-invariant, knee reads on AUC); the **data** side is not — more selfgen eval images per generator is the highest-value remaining action
 
 - Execute the build plan in stage order. **S1 (data) is the highest risk and comes first**; S1-S5 are the demo and are never cut
 - Nothing is on disk yet: `checkpoints/`, `dataset/`, `data_raw/`, `outputs/`, `runs/` all absent
