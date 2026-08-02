@@ -17,14 +17,19 @@ Mirrors selfgen_gptimage_test.py's client setup and resolution reasoning
 upsampling); run that test script first to confirm the API path works.
 
 Usage (Colab):
-    Set the OPENAI_API_KEY secret, then:
+    userdata.get() needs the notebook's IPython kernel and doesn't work from
+    a subprocess, so pull the secret into an env var in the notebook cell
+    first, then launch this as a subprocess (it inherits the env var):
+        from google.colab import userdata
+        import os
+        os.environ['OPENAI_API_KEY'] = userdata.get('OPENAI_API_KEY')
     !python data/selfgen_gptimage_generate.py --indomain 130 --offdomain 20
 """
 import argparse
 import base64
+import os
 import sys
 from pathlib import Path
-from google.colab import userdata
 
 _THIS_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 sys.path.insert(0, str(_THIS_DIR.parent))
@@ -44,9 +49,9 @@ def main() -> None:
     parser.add_argument("--max-retries", type=int, default=5, help="retries per prompt before logging a permanent failure")
     args = parser.parse_args()
 
-    api_key = userdata.get("OPENAI_API_KEY")
+    api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise SystemExit("Set OPENAI_API_KEY first.")
+        raise SystemExit("Set OPENAI_API_KEY first (see module docstring -- must be an env var, not just a Colab secret).")
 
     client = OpenAI(api_key=api_key)
 
