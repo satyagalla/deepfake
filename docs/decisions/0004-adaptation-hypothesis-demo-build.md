@@ -1,6 +1,6 @@
 # 0004 — The Adaptation Hypothesis: Patch-Based Frozen CLIP Probe with Evidence Cards
 
-**Status:** Accepted
+**Status:** Accepted — **partially superseded by [`0005-measurement-and-verdict-semantics.md`](0005-measurement-and-verdict-semantics.md)** (§6.6, §7.1, §8's verdict vocabulary, §9 E1/E5 criteria). The claim, the data constraints, the patch design and the frozen backbone are untouched.
 **Date:** 2026-08-02
 **Deadline:** Monday 2026-08-03 (Plurall AI second interview)
 **Supersedes:** [`0003-frozen-probe-demo-build.md`](0003-frozen-probe-demo-build.md) §4.3 (backbone), §5 (data route), and most of §6 (the not-built list) — see §3.
@@ -40,7 +40,7 @@ This survives the fixed test scenario in a way `0003`'s framing does not. When t
 | §4.3 (backbone: CLIP first, DINOv2 as a swap) | **Superseded.** DINOv2 is dropped outright, not deferred — §6.4. |
 | §4.4 (logistic regression probe) | **Stands.** |
 | §5 (data: ≥2 generators, prefer external corpus) | **Superseded.** The generators were already in the corpus we had — §5. |
-| §6 (not built: calibration, OOD gating, explainability) | **Mostly superseded.** Calibration, OOD gating and per-dimension explainability are now *in* scope, because the card system is what the product surface is — §8. Grad-CAM stays out. |
+| §6 (not built: calibration, OOD gating, explainability) | **Mostly superseded.** Calibration, OOD gating and per-dimension explainability are now *in* scope, because the card system is what the product surface is — §8. Grad-CAM stays out. **Amended 2026-08-02 by `0005` §3:** calibration is *out* of scope again — `0003` §6 was right and this row was wrong. What was built was one step of the chain (a Platt fit on the val split), fitted on the wrong distribution for every headline number. OOD gating and explainability stand. |
 | §7 (risks) | Carried forward and extended — §11. |
 
 `0003` §3's honesty note carries forward unchanged: **the `0002` §9 falsification gate was spent, not passed.** Nothing in `0004` restores it. What `0004` adds is a set of *pre-registered* experiments (§9) that are gates in their own right.
@@ -134,6 +134,8 @@ Mean assumes a spatially uniform artifact (which the decode signature plausibly 
 
 ### 6.6 Calibration is fitted on aggregated image-level scores
 
+> **Moot as of 2026-08-02 — [`0005`](0005-measurement-and-verdict-semantics.md) §3.** Nothing is fitted post-hoc any more, so nothing can be fitted at the wrong level. The section is not *wrong*; it no longer has a referent. The nesting rule below stands and still governs every split (build-plan I2/I3).
+
 16 patches from one image are not 16 independent samples. Fitting Platt/temperature scaling on patch-level scores would produce a systematically overconfident model. The nesting is **row → image → patch**, and all three levels respect the split.
 
 ## 7. Model
@@ -142,7 +144,9 @@ Frozen CLIP ViT-L/14. Features extracted once and cached; every experiment there
 
 ### 7.1 Head A — binary, the fused score
 
-Logistic regression, real vs AI-generated, on the concatenated patch + whole-image features. Platt/temperature calibrated on a held-out split. This produces the number the verdict thresholds apply to.
+Logistic regression, real vs AI-generated, on the concatenated patch + whole-image features. ~~Platt/temperature calibrated on a held-out split.~~ This produces the number the verdict thresholds apply to.
+
+> **Superseded 2026-08-02 — [`0005`](0005-measurement-and-verdict-semantics.md) §3.** The calibrator is removed. It was fitted on `split="val"` (COCO_AI, SD/DALL·E, 270–480px) and applied to Gemini/GPT-Image at 1024px and to Midjourney — the wrong distribution for every headline number. It is monotone, so it could not move AUC; and it contaminated E5, which evaluated on the split the calibrator was fitted on. Card scores now come from the classifier's own `predict_proba`. **This build emits no calibrated probability**, and `0005` §8 records why that is the honest position rather than a gap.
 
 ### 7.2 Head B — multiclass generator ID, and the OOD gate
 
@@ -162,6 +166,8 @@ The Mahalanobis choice is also the honest version of the founder's **Gaussian** 
 
 Plurall returns six cards, schema `{dimension, label, score, verdict, detail}`, verdicts `AUTHENTIC | SUSPICIOUS | SYNTHETIC | PLAUSIBLE | STRIPPED`, fused thresholds SYNTHETIC ≥0.85 / SUSPICIOUS ≥0.5 `[stated]`.
 
+> **Superseded 2026-08-02 — [`0005`](0005-measurement-and-verdict-semantics.md) §6.** The sentence above is accurate about *their* product and stays as the record of it; the error was adopting it as *our* vocabulary, since it describes a different model's observables. Our system now emits two fields — `verdict ∈ {DECLARED_SYNTHETIC, LIKELY_SYNTHETIC, WEAK_EVIDENCE, NO_EVIDENCE}` and `reliability ∈ {IN_DISTRIBUTION, UNKNOWN_SOURCE}` — because the score and the model's entitlement to it are orthogonal, and the Mahalanobis gate is the property this build is a claim about. Cards carry no verdicts at all: they have a `score` or a `silent_because`. `AUTHENTIC` is dropped as unreachable (absence of synthesis evidence is not evidence of capture). Thresholds are re-derived from a false-positive budget (`0005` §7). **The P1 drill still implements their spec, unchanged** — `0005` §12.
+
 | Card | Status | Source |
 |---|---|---|
 | **AI Model** | Built | Head B — named generator + confidence |
@@ -175,10 +181,12 @@ Plurall returns six cards, schema `{dimension, label, score, verdict, detail}`, 
 
 **Rules:**
 
-- A `STRIPPED` card is **excluded from the fused score**, not scored as 0.5. Absent metadata is absent evidence; scoring it as neutral evidence lets missing data move the number. It widens the confidence interval instead.
-- Per-card **scope**: a card that cannot speak to an input returns `NOT_APPLICABLE` rather than a low-confidence guess.
-- **Abstention on an unknown generator** (§7.2) overrides the fused verdict.
-- Thresholds are **parameters**, not constants — the product exposes them under Detection Settings, so the code must too.
+- A `STRIPPED` card is **excluded from the fused score**, not scored as 0.5. Absent metadata is absent evidence; scoring it as neutral evidence lets missing data move the number. It widens the confidence interval instead. — *Rule stands; re-expressed as card silence, `0005` §6.3.*
+- Per-card **scope**: a card that cannot speak to an input returns `NOT_APPLICABLE` rather than a low-confidence guess. — *Rule stands; now `silent_because`, `0005` §6.3.*
+- **Abstention on an unknown generator** (§7.2) overrides the fused verdict. — **Superseded, `0005` §6.2:** abstention no longer overrides the verdict, it *accompanies* it as the `reliability` field. Suppressing the verdict hid the gate's most informative output; Midjourney at 0-shot reading `LIKELY_SYNTHETIC / UNKNOWN_SOURCE` is the better demonstration.
+- Thresholds are **parameters**, not constants — the product exposes them under Detection Settings, so the code must too. — *Rule stands; only the defaults' provenance changes, `0005` §7.*
+
+> **Two fusion defects found 2026-08-02 and left open — [`0005`](0005-measurement-and-verdict-semantics.md) §6.4.** The unweighted mean made the top verdict *unreachable* whenever the EXIF card fired on camera metadata (ceiling `(1.0+1.0+0.05)/3 = 0.68`), and it gives the weakest card half the vote once metadata-free API output silences the EXIF card. Documented rather than fixed: weighted fusion is not new behaviour to introduce the day before the deadline.
 
 ### 8.1 The watermark and post-processing problem
 
@@ -196,11 +204,11 @@ Registered before running, because `0002` §9's gate was already spent once by d
 
 | | Experiment | What it answers | Success criterion, stated in advance |
 |---|---|---|---|
-| **E1** | **N-shot adaptation curve** — accuracy on a held-out generator vs N training images from it, N ∈ {0, 5, 10, 20, 30, 50, 100} | The headline. What does adaptation cost? | The *knee* is the finding, whatever its location. A curve with no knee falsifies the claim. |
+| **E1** | **N-shot adaptation curve** — ~~accuracy~~ **AUC** on a held-out generator vs N training images from it, N ∈ {0, 5, 10, 20, 30, 50, 100} | The headline. What does adaptation cost? | The *knee* is the finding, whatever its location. A curve with no knee falsifies the claim. **Knee criterion moved to AUC ≥ 0.90** (`0005` §5); balanced accuracy, TPR and FPR reported alongside. |
 | **E2** | **Held-out Midjourney, 0-shot** | Does the model transfer to a generator it has genuinely never seen? | Reported as measured. A low number is a result, not a failure. |
 | **E3** | **Degradation ladder, per card** | Which evidence survives post-processing; is the score reading a watermark? | Per-card curves. Learned score tracking the provenance card = confound confirmed. |
 | **E4** | **Off-domain prompts** | Is the model reading synthesis or COCO's content distribution? | Accuracy drop on off-domain vs in-domain prompts at equal N. |
-| **E5** | **AUC, not just accuracy** | `bottlenecks.md` §4.1: **AUC has never been computed on this project.** | First measurement. Separates "lost separability" from "misaligned threshold" — the open question in `plan-c-source-verification.md`. |
+| **E5** | **AUC, not just accuracy** | `bottlenecks.md` §4.1: **AUC has never been computed on this project.** | First measurement. Separates "lost separability" from "misaligned threshold" — the open question in `plan-c-source-verification.md`. **Absorbed, `0005` §4.1:** AUC is no longer one experiment but the primary metric of all of them; E5 remains as the val-split measurement, now on a genuinely held-out val (the calibrator that contaminated it is gone). |
 | **E6** | **Aggregator ablation** (§6.5) | mean vs max vs top-k vs trimmed | Free; comes off cached patch scores. |
 | **E7** | **Preprocessing arms** — standard resize vs native patches | Does §6 actually pay? | One extra extraction pass. Standard resize is the reproducible control. |
 

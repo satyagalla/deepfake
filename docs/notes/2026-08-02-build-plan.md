@@ -34,7 +34,9 @@ Assert these in code. Do not verify them by eye once and assume they hold.
 | I5 | **CLIP normalization constants, not ImageNet's** | extraction | `model/demo.py:36` uses ImageNet's. Carrying that over is a silent, plausible-looking bug |
 | I6 | **L2-normalize features before any fit** | extraction | SSAFE does; required for Mahalanobis conditioning (`0004` §7.2) |
 | I7 | **Midjourney never enters training at any N** | split builder | It is the honesty anchor. Losing it costs the only clean 0-shot number |
-| I8 | **Calibration fitted on image-level aggregated scores** | Head A fit | 16 patches ≠ 16 independent samples |
+| ~~I8~~ | ~~**Calibration fitted on image-level aggregated scores**~~ | ~~Head A fit~~ | **Retired 2026-08-02** ([`0005`](../decisions/0005-measurement-and-verdict-semantics.md) §3): nothing is fitted post-hoc, so nothing can be fitted at the wrong level. The row → image → patch nesting it protected is already carried by I2/I3. Replaced by the two below. |
+| **I8** | **No post-hoc fitted stage between Head A's score and the verdict** | Head A fit, card scoring | A calibrator fitted on COCO_AI val and applied to a live 1024px Gemini upload is a plausible-looking wrong number, not a probability (`0005` §3). Card scores come from the classifier's own `predict_proba` |
+| **I9** | **Every cut-point metric is reported on a class-balanced basis, and `α = E[z]` is computed on a balanced subsample** | `evaluate_head_a` | E1's eval set is ~450 real against *tens* of AI, so "always real" scores ≥90% and a flat curve would falsify the claim by artifact (`0005` §5). AUC/TPR/FPR need no balancing and get the full set |
 
 ---
 
@@ -77,7 +79,7 @@ Expected GPU time is a few minutes; JPEG decode dominates. If it is slow, the bo
 
 ### S4 — Heads (~30 min)
 
-- **Head A:** logistic regression, real vs AI, on concatenated patch + whole features. Platt/temperature calibration on a held-out split, fitted on **image-level aggregated** scores (I8).
+- **Head A:** logistic regression, real vs AI, on concatenated patch + whole features. **No calibration stage** (I8, [`0005`](../decisions/0005-measurement-and-verdict-semantics.md) §3) — raw `decision_function` for metrics, the classifier's own `predict_proba` where a `[0,1]` card score is needed.
 - **Head B:** multiclass over `{real, sd21, sdxl, sd3, sd35, dalle, gemini, gptimage}`.
 - **Mahalanobis gate:** per-class means, **one pooled covariance with Ledoit-Wolf shrinkage** (never per-class — singular at 768-d against ~150 samples).
 
@@ -85,9 +87,13 @@ Seconds to fit. This is the point at which the frozen-backbone decision pays for
 
 ### S5 — E1, the headline (~30 min)
 
-N-shot adaptation curve: accuracy on a held-out generator vs N ∈ {0, 5, 10, 20, 30, 50, 100} images from it. Multiple random draws per N; plot the spread, not just the mean.
+N-shot adaptation curve: **AUC** on a held-out generator vs N ∈ {0, 5, 10, 20, 30, 50, 100} images from it. Multiple random draws per N; plot the spread, not just the mean.
 
 **The knee is the finding, wherever it is.** A curve with no knee falsifies the claim (`0004` §9) and gets reported as such.
+
+**Metric set** ([`0005`](../decisions/0005-measurement-and-verdict-semantics.md) §4): AUC and balanced accuracy plotted; TPR, FPR, `n_ai`, `n_real`, `alpha`, `accuracy_at_alpha` and the oracle ceiling in the JSON. Knee on **AUC ≥ 0.90**. Precision is *derived* at a named prevalence, never stored (§4.3).
+
+**Fix before running:** `run_e1`'s eval set is ~450 real val images against *tens* of selfgen eval images (I9). Unfixed, "always real" scores ≥90%, the curve goes flat, and the build falsifies its own claim on set composition. Balance applies to cut-point metrics and to `α` only — AUC, TPR and FPR keep the full set.
 
 **S1–S5 complete = the demo exists.** Everything below is upside.
 
@@ -95,29 +101,32 @@ N-shot adaptation curve: accuracy on a held-out generator vs N ∈ {0, 5, 10, 20
 
 All come off the S3 cache at zero marginal GPU cost:
 
-- **E5 — AUC.** `bottlenecks.md` §4.1: AUC has never been computed on this project. First measurement, and it separates "lost separability" from "misaligned threshold" — the open question in `plan-c-source-verification.md`.
+- **E5 — AUC.** `bottlenecks.md` §4.1: AUC has never been computed on this project. First measurement, and it separates "lost separability" from "misaligned threshold" — the open question in `plan-c-source-verification.md`. Now on a genuinely held-out val split: the calibrator that was fitted on it is gone (`0005` §3). Read against `plan-c` §5's rule — **AUC ≳0.75 with accuracy ≈50% → threshold problem; AUC ≈0.5 → Chameleon regime.**
 - **E2 — Midjourney 0-shot.** The clean held-out number.
 - **E6 — aggregator ablation.** mean / max / top-k / trimmed, plus the flat-patch filter.
 - **E7 — preprocessing arms.** Native patches vs standard resize.
 
 ### S7 — Cards, fusion, verdict (~60 min) · **also P1 drill #1**
 
-Schema `{dimension, label, score, verdict, detail}` → fused score → verdict → confidence.
+**Two different artifacts, and they must not be conflated** — [`0005`](../decisions/0005-measurement-and-verdict-semantics.md) §12:
+
+**(a) The drill.** Plurall's schema `{dimension, label, score, verdict, detail}` → fused score → verdict (`SYNTHETIC` ≥0.85, `SUSPICIOUS` ≥0.5, else `AUTHENTIC`) → confidence, handling a `STRIPPED` card and disagreeing dimensions. **Their spec, unchanged** (`notes.md:134`). Type it from scratch rather than generating it. That is the drill, and it is still the best hour in the plan.
+
+**(b) Our system's card layer**, which uses a vocabulary derived from what *this* model can observe (`0005` §6):
 
 - **AI Model** (Head B), **Spectral** (radial FFT), **EXIF** (EXIF + C2PA, deterministic) — built.
 - **Diffusion**, **Temporal**, **Web Intelligence** — honest stubs with declared scope.
-- `STRIPPED` is **excluded** from the fused score, not scored 0.5 — it widens the interval instead.
-- Cards that cannot speak to an input return `NOT_APPLICABLE`.
-- Mahalanobis abstention overrides the fused verdict.
-- Thresholds (0.85 / 0.5) are **parameters**, matching the product's Detection Settings.
-
-Type it from scratch rather than generating it. That is the drill.
+- **Cards carry no verdicts.** A card has a `score` or a `silent_because`. `STRIPPED` / `NOT_APPLICABLE` / `PLAUSIBLE` were reasons for silence, not verdicts. The exclusion rule is unchanged: absent metadata is excluded from the fused score, never scored 0.5.
+- **Two output fields:** `verdict ∈ {DECLARED_SYNTHETIC, LIKELY_SYNTHETIC, WEAK_EVIDENCE, NO_EVIDENCE}` and `reliability ∈ {IN_DISTRIBUTION, UNKNOWN_SOURCE}`. `AUTHENTIC` is dropped as unreachable.
+- **Mahalanobis abstention accompanies the verdict, it does not suppress it.** Midjourney at 0-shot should read `LIKELY_SYNTHETIC / UNKNOWN_SOURCE`.
+- Thresholds stay **parameters** (Detection Settings), but the defaults are **fitted from the real val split** — 99th percentile = 1% FPR for `LIKELY_SYNTHETIC`, 90th = 10% FPR for `WEAK_EVIDENCE` (`0005` §7).
+- **Known open defects** (`0005` §6.4), documented not fixed: the unweighted mean makes the top verdict unreachable when the EXIF card fires on camera metadata, and gives the weakest card half the vote when API output silences EXIF.
 
 ### S8 — Gradio demo (~45 min)
 
 New path, not `model/demo.py`. Note what the old one does: MTCNN crop, and **`return (None, None, None, None)` when no face is detected** — a faceless upload produces no prediction at all. The new path has no face crop, so this fails by construction rather than by fix.
 
-Must display: fused score, verdict, all six cards with per-card verdicts, the abstention state, and **E1's curve on screen** so a live result lands on a chart that was already visible.
+Must display: fused score, **`verdict` and `reliability` side by side** (`0005` §6.2 — the gate is shown, not used to blank the answer), all six cards with their score or their `silent_because` reason, and **E1's curve on screen** so a live result lands on a chart that was already visible.
 
 ### S9 — E3, degradation ladder (~30 min)
 
@@ -148,15 +157,42 @@ Cut from the bottom: **S10 → S9 → S8 → S7 → S6.**
 
 | Stage | Status |
 |---|---|
-| S1 Data | Not started |
-| S2 Generation | Not started |
-| S3 Extraction | Not started |
-| S4 Heads | Not started |
-| S5 E1 curve | Not started |
-| S6 Free experiments | Not started |
-| S7 Cards/fusion | Not started |
-| S8 Gradio | Not started |
-| S9 Degradation ladder | Not started |
-| S10 Off-domain | Not started |
+| S1 Data | Code written (`data/download.py`, `data/resolution_stats.py`) -- not yet run |
+| S2 Generation | Code written (`data/selfgen_prompts.py`, `data/selfgen_organize.py`) -- generation itself is manual, not yet run |
+| S3 Extraction | Code written (`probe/patches.py`, `probe/extract.py`) -- not yet run |
+| S4 Heads | Code written (`probe/heads.py`, `probe/fit_production.py`) -- not yet run |
+| S5 E1 curve | Code written (`probe/experiments.py::run_e1`) -- not yet run |
+| S6 Free experiments | Code written (E2/E4/E5/E6/E7 in `probe/experiments.py`) -- not yet run |
+| S7 Cards/fusion | Code written (`probe/cards.py`, `probe/spectral.py`) -- not yet run |
+| S8 Gradio | Code written (`probe/demo.py`) -- not yet run |
+| S9 Degradation ladder | Code written (`probe/degradation.py`) -- not yet run |
+| S10 Off-domain | Code written (E4, folded into `probe/experiments.py`); notebook wiring done (`adaptation_probe.ipynb`) |
 
-Nothing is on disk as of 2026-08-02: `checkpoints/`, `dataset/`, `data_raw/`, `outputs/`, `runs/` are all absent `[measured]`.
+### `0005` rework — partially applied, tree does not currently run
+
+Spec: [`2026-08-02-0005-rework-spec.md`](2026-08-02-0005-rework-spec.md). **Start there, not here** — it carries the exact remaining diff.
+
+| File | State |
+|---|---|
+| `config.py` | ✅ `VERDICT_*` thresholds + FPR budgets replace `FUSION_*` (§7) |
+| `probe/heads.py` | ✅ Calibrator gone; `score_head_a` / `prob_head_a` replace `predict_proba_head_a` (I8) |
+| `probe/thresholds.py` | ✅ New — the §4 metric set, `α = E[z]`, oracle ceiling, `precision_at_prevalence`, FPR-budget cut points |
+| `probe/spectral.py` | ✅ Calibration-free fit; val stays held out |
+| `probe/cards.py` | ✅ Rewritten — `verdict` + `reliability`, cards carry `score`-or-`silent_because` (§6) |
+| `probe/experiments.py` | ✅ New metric set, `α` on a balanced subsample (I9), two-line `plot_e1`, knee on AUC ≥ 0.90 |
+| `probe/fit_production.py` | ⚠️ **Half-applied — `NameError` on `val_rows`** |
+| `probe/degradation.py` | ❌ **`ImportError`** — still imports `predict_proba_head_a` |
+| `probe/demo.py` | ❌ **`AttributeError`** — still reads `card.verdict` / `fusion.abstained` |
+| `adaptation_probe.ipynb` | ❌ Prose only, non-blocking |
+
+Nothing is committed (`probe/` is untracked), so there is no clean revert and nothing is at risk from finishing forward.
+
+**The smoke-test note below predates the `0005` rework and no longer holds for the three files above.** The six completed files parse; the tree as a whole does not import. Re-run the smoke test after the spec is applied.
+
+All modules pass syntax checks and were smoke-tested locally against a synthetic feature cache
+matching `extract.py`'s exact on-disk schema (patch sampling invariants, pooling, Head A/B fit +
+predict, Mahalanobis gate abstention, EXIF/C2PA card, fusion, degradation-ladder transforms, E1-E6
+end to end) -- see the session that authored this update. **Nothing has run against real data or
+the real CLIP backbone yet** -- that requires Colab (`adaptation_probe.ipynb`), per the Environment
+note at the top of this doc. Nothing is on disk as of 2026-08-02: `checkpoints/`, `dataset/`,
+`data_raw/`, `outputs/`, `runs/`, and the new `probe/`-namespaced data root are all absent `[measured]`.
