@@ -168,9 +168,9 @@ Cut from the bottom: **S10 → S9 → S8 → S7 → S6.**
 | S9 Degradation ladder | Code written (`probe/degradation.py`) -- not yet run |
 | S10 Off-domain | Code written (E4, folded into `probe/experiments.py`); notebook wiring done (`adaptation_probe.ipynb`) |
 
-### `0005` rework — partially applied, tree does not currently run
+### `0005` rework — fully applied, tree imports cleanly
 
-Spec: [`2026-08-02-0005-rework-spec.md`](2026-08-02-0005-rework-spec.md). **Start there, not here** — it carries the exact remaining diff.
+Spec: [`2026-08-02-0005-rework-spec.md`](2026-08-02-0005-rework-spec.md) (historical — captures the mid-rework diff, now superseded by the state below).
 
 | File | State |
 |---|---|
@@ -180,14 +180,14 @@ Spec: [`2026-08-02-0005-rework-spec.md`](2026-08-02-0005-rework-spec.md). **Star
 | `probe/spectral.py` | ✅ Calibration-free fit; val stays held out |
 | `probe/cards.py` | ✅ Rewritten — `verdict` + `reliability`, cards carry `score`-or-`silent_because` (§6) |
 | `probe/experiments.py` | ✅ New metric set, `α` on a balanced subsample (I9), two-line `plot_e1`, knee on AUC ≥ 0.90 |
-| `probe/fit_production.py` | ⚠️ **Half-applied — `NameError` on `val_rows`** |
-| `probe/degradation.py` | ❌ **`ImportError`** — still imports `predict_proba_head_a` |
-| `probe/demo.py` | ❌ **`AttributeError`** — still reads `card.verdict` / `fusion.abstained` |
+| `probe/fit_production.py` | ✅ `val_rows` defined and used correctly (`fit_production.py:39`) |
+| `probe/degradation.py` | ✅ No `predict_proba_head_a` reference; imports cleanly |
+| `probe/demo.py` | ✅ No `card.verdict` / `fusion.abstained` reference; imports cleanly (gradio must be installed to run it) |
 | `adaptation_probe.ipynb` | ❌ Prose only, non-blocking |
 
-Nothing is committed (`probe/` is untracked), so there is no clean revert and nothing is at risk from finishing forward.
+Committed in `39fbfdb` (already includes the fixes above, contrary to the rework spec's snapshot). `config.py`, `probe/fit_production.py`, `probe/degradation.py`, and `probe/demo.py` all import successfully under `.venv` as of 2026-08-02 `[measured]`.
 
-**The smoke-test note below predates the `0005` rework and no longer holds for the three files above.** The six completed files parse; the tree as a whole does not import. Re-run the smoke test after the spec is applied.
+**The smoke-test note below predates the `0005` rework but now holds again for all nine files, not just six.** Verified by `python -c "import probe.<module>"` for each of the three previously-broken files.
 
 All modules pass syntax checks and were smoke-tested locally against a synthetic feature cache
 matching `extract.py`'s exact on-disk schema (patch sampling invariants, pooling, Head A/B fit +
