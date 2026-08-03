@@ -78,7 +78,12 @@ FEATURES_STANDARD_DIR = PROBE_DATA_ROOT / "features_standard"  # E7 control arm:
 SPLITS_DIR = PROBE_DATA_ROOT / "splits"
 PROBE_CHECKPOINT_DIR = PROBE_DATA_ROOT / "checkpoints"
 PROBE_OUTPUTS_DIR = PROBE_DATA_ROOT / "outputs"  # experiment results (json) + plots (png)
-EXTRACT_BATCH_SIZE = 384  # build plan S3: batch 256-512 on an A100
+EXTRACT_BATCH_SIZE = 384  # build plan S3: batch 256-512 on an A100 -- counted in *views*, not images
+# Decode + crop + flatness is the extraction bottleneck, not the GPU (~1.2 s/img
+# single-threaded vs ~15 min of A100 time for the whole corpus), so this stage
+# runs on DataLoader workers. 0 = in-process (use on Windows if worker startup
+# or pickling misbehaves).
+EXTRACT_NUM_WORKERS = min(8, os.cpu_count() or 2)
 
 # --- E1 (0004 §9) ---
 NSHOT_VALUES = [0, 5, 10, 20, 30, 50, 100]
