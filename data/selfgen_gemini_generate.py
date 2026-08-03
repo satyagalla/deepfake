@@ -61,11 +61,15 @@ def main() -> None:
             contents=[prompt],
             config=genai.types.GenerateContentConfig(image_config=image_config),
         )
-        for part in response.candidates[0].content.parts:
+        candidate = response.candidates[0]
+        parts = candidate.content.parts if candidate.content is not None else None
+        if not parts:
+            raise RuntimeError(f"no image returned (finish_reason: {candidate.finish_reason})")
+        for part in parts:
             if part.inline_data is not None:
                 atomic_write_bytes(out_path, part.inline_data.data)
                 return
-        text_parts = [p.text for p in response.candidates[0].content.parts if p.text]
+        text_parts = [p.text for p in parts if p.text]
         raise RuntimeError(f"no image returned (text response: {text_parts[:1]})")
 
     run_generation(
