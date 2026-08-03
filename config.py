@@ -11,6 +11,12 @@ ROOT = Path(__file__).resolve().parent
 # to a mounted Google Drive path in Colab (e.g. /content/drive/MyDrive/deepfake)
 # to persist raw/processed data and checkpoints across runtime recycles.
 DATA_ROOT = Path(os.environ.get("DEEPFAKE_DATA_ROOT", ROOT))
+if "DEEPFAKE_DATA_ROOT" not in os.environ and Path("/content").is_dir():
+    # /content only exists in Colab -- if DEEPFAKE_DATA_ROOT is unset there,
+    # every write in this session lands on the ephemeral VM disk instead of
+    # Drive and is silently lost on disconnect/recycle.
+    print(f"[config] WARNING: Colab detected but DEEPFAKE_DATA_ROOT is unset -- "
+          f"writing to {DATA_ROOT} (local VM disk, NOT Drive, will be lost).")
 
 # --- raw download targets ---
 RAW_DIR = DATA_ROOT / "data_raw"
