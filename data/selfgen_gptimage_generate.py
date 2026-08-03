@@ -60,7 +60,7 @@ def main() -> None:
             model=MODEL,
             prompt=prompt,
             size="1024x1024",
-            quality="high",
+            quality="medium",
             n=1,
         )
         atomic_write_bytes(out_path, base64.b64decode(response.data[0].b64_json))
